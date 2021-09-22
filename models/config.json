@@ -1,0 +1,35 @@
+{
+    "embedding_model_name": "bert-base-multilingual-cased",
+    "generator": {
+        "lstm": {
+            "input_size": 3072,
+            "hidden_size": 128,
+            "num_layers": 1,
+            "bidirectional": true
+        },
+        "dropout": 0.2,
+        "linear": {
+            "in_features": 256
+        },
+        "selection_lambda": 0.001,
+        "continuity_lambda": 0.001
+    },
+    "encoder": {
+        "lstm": {
+            "input_size": 3072,
+            "hidden_size": 128,
+            "num_layers": 1,
+            "bidirectional": true
+        },
+        "dropout": 0.2,
+        "linear": {
+            "in_features": 256
+        }
+    },
+    "train": {
+        "num_epochs": 20,
+        "patience": 5,
+        "lr": 1e-3,
+        "batch_size": 64
+    }
+}
