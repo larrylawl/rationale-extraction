@@ -513,9 +513,9 @@ def score_hard_rationale_predictions(mask_pad, rationale_pad, token_lengths):
         scores = precision_recall_fscore_support(rationale_instance, mask_instance, average='binary', zero_division=0)
         running_scores += torch.tensor(scores[:-1])
 
-        p, r, f1, _ = scores 
     p, r, f1 = running_scores / len(token_lengths)
     return p, r, f1
+
 
 ### TESTS
 

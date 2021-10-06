@@ -16,11 +16,12 @@ class Encoder(nn.Module):
     def forward(self, t_e_pad, t_e_lens, mask=None):
         '''
             x: PackedSequence
-            mask: Mask to apply over embeddings for tao ratioanles
+            mask: Mask to apply over embeddings for tao rationales
         '''
         # NOTE: not ideal, but pytorch has no RNN masking layers. suspect that zero vector inputs will lead to zero gradients being backpropped.
         if not mask is None: 
             t_e_pad = (t_e_pad.T * mask.T).T  # ((L, N, D*H_out).T * (L, N).T).T = ((D*H_out, N, L) * (N, L)).T = (L, N, D*H_out)
+
         t_e_packed = pack_padded_sequence(t_e_pad, t_e_lens, enforce_sorted=False)
         out_packed, _ = self.lstm(t_e_packed)
         out_padded, out_lens = pad_packed_sequence(out_packed)  # (L, N, D*H_out), (N)

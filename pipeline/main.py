@@ -17,6 +17,7 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from models.encoder import Encoder
 from models.generator import Generator
+import random
 
 from utils import load_datasets, create_instance, load_documents, load_instances, get_num_classes, get_optimizer, dataset_mapping, get_base_dataset_name, read_json, write_json, plot_grad_flow, tracked_named_parameters, score_hard_rationale_predictions
 
@@ -35,6 +36,7 @@ def parse_args():
     parser.add_argument("--data_dir", required=True, help="Input directory to data.")
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
+    parser.add_argument("--tune_hp", action="store_true")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -66,6 +68,13 @@ def pad_collate(batch):
     l = torch.tensor([dataset_mapping[base_dataset_name][x] for x in l], dtype=torch.long).to(device)
 
     return t_e_pad, t_e_lens, r_pad, l, ann_id
+
+def tune_hp(config):
+    config["generator"]["selection_lambda"] = round(10 ** random.uniform(-4, -2), 5)
+    config["generator"]["continuity_lambda"] = round(10 ** random.uniform(-4, -2), 5)
+    config["train"]["lr"] = round(10 ** random.uniform(-4, -2), 5)
+    
+    return config
 
 def train(dataloader, enc, gen, loss_fn, optimizer):
     running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_sel_loss", "trg_cont_loss", "trg_total_f1", "trg_tok_precision", "trg_tok_recall", "trg_tok_f1"]
@@ -150,6 +159,10 @@ def main():
     writer = SummaryWriter(args.out_dir)
 
     config = read_json(args.config)
+    if args.tune_hp:
+        config = tune_hp(config)
+        write_json(config, os.path.join(args.out_dir, "new_config.json"))
+
     config["encoder"]["num_classes"] = get_num_classes(base_dataset_name)
 
     

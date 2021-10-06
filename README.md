@@ -2,7 +2,7 @@ Reimplementation of Tao Lei's Rationalizing Neural Prediction [paper](https://ar
 1. Uses bi-lstm as our choice of recurrent unit instead of RCNN. 
 2. Uses gumble softmax instead of REINFORCE to approximate the binary mask selection. 
 
-This reimplementation is still WIP as I'm ironing out some kinks.
+This reimplementation compiles but results are poor. I'm ironing out some kinks (such as the poor gradient flow).
 
 ## Requirements
 1. Download the (modified) ERASER's e-snli dataset [here](https://drive.google.com/file/d/1G70bdWTaGz1gpBuajVWS5tM8TPGPyX13/view?usp=sharing).
