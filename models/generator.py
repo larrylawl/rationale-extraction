@@ -33,8 +33,8 @@ class Generator(nn.Module):
         out = self.dropout(out_padded) 
         out = self.fc(out)  # (L, N, 2)
         logits = self.log_sm(out)
-        mask_prob = F.gumbel_softmax(logits, tau=self.tau, hard=True)  # (L, N, 2)
-        mask = mask_prob[:, :, 1]  # [:, :, 1] := (hard) prob of the token being a rationale; # (L, N)
+        mask_prob = F.gumbel_softmax(logits, tau=self.tau, hard=False)  # (L, N, 2)
+        mask = mask_prob[:, :, 1]  # [:, :, 1] := prob of the token being a rationale; # (L, N)
         return mask
 
     def loss(self, mask):

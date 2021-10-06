@@ -78,7 +78,7 @@ def tune_hp(config):
     return config
 
 def train(dataloader, enc, gen, optimizer):
-    running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_mask_loss", "trg_total_f1", "trg_tok_precision", "trg_tok_recall", "trg_tok_f1"]
+    running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_cont_loss", "trg_sel_loss", "trg_mask_sup_loss", "trg_total_f1", "trg_tok_precision", "trg_tok_recall", "trg_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     # total_params = len(tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters())))
     # mean_grads = torch.zeros(total_params).to(device)
@@ -90,20 +90,20 @@ def train(dataloader, enc, gen, optimizer):
     for batch, (t_e_pad, t_e_lens, r_pad, l, _) in enumerate(tqdm(dataloader)):        
         # forward pass
         mask = gen(t_e_pad, t_e_lens)
-        logit = enc(t_e_pad, t_e_lens, mask=mask)  # NOTE: to test gen and enc independently, change mask to none
+        # hard yet differentiable by using the same trick as https://pytorch.org/docs/stable/generated/torch.nn.functional.gumbel_softmax.html#
+        mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
+        logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
         probs = nn.Softmax(dim=1)(logit.detach().cpu())
         y_pred = torch.argmax(probs, dim=1)
 
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
-        # print(f"mask: {mask.type()}")
-        # print(f"r_pad: {r_pad.type()}")
         if args.sup: mask_sup_loss = nn.BCELoss()(mask, r_pad)
         else: mask_sup_loss = torch.tensor(0)
         obj_loss = nn.CrossEntropyLoss()(logit, l)
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
         f1 = f1_score(l.detach().cpu(), y_pred, average="macro")
-        tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask.detach().cpu(), r_pad.detach().cpu(), t_e_lens)
+        tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach().cpu(), r_pad.detach().cpu(), t_e_lens)
 
         # Backpropagation
         optimizer.zero_grad()
@@ -111,8 +111,7 @@ def train(dataloader, enc, gen, optimizer):
         optimizer.step()
 
         # tracking metrics
-        mask_loss = selection_cost.detach() + continuity_cost.detach() + mask_sup_loss.detach()
-        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), mask_loss, f1, tok_p, tok_r, tok_f1])
+        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), continuity_cost.detach(), selection_cost.detach(), mask_sup_loss.detach(), f1, tok_p, tok_r, tok_f1])
 
         # tracking gradients
         # t_n_p = tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters()))
@@ -141,11 +140,12 @@ def test(dataloader, enc, gen):
     with torch.no_grad():
         for batch, (t_e_pad, t_e_lens, r_pad, l, ann_id) in enumerate(tqdm(dataloader)):        
             mask = gen(t_e_pad, t_e_lens)
-            logit = enc(t_e_pad, t_e_lens, mask=mask)  # NOTE: to test gen and enc independently, change mask to none
+            mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
+            logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
             probs = nn.Softmax(dim=1)(logit.detach().cpu())
             y_pred = torch.argmax(probs, dim=1)
             f1 = f1_score(l.detach().cpu(), y_pred, average="macro")
-            tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask.detach().cpu(), r_pad.detach().cpu(), t_e_lens)
+            tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach().cpu(), r_pad.detach().cpu(), t_e_lens)
 
             running_scalar_metrics += torch.tensor([f1, tok_p, tok_r, tok_f1])
 
