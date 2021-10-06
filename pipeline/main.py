@@ -37,6 +37,7 @@ def parse_args():
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
+    parser.add_argument("--sup", action="store_true")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -63,7 +64,7 @@ def pad_collate(batch):
     t_e_lens = [t.size()[0] for t in t_e]
 
     t_e_pad = pad_sequence(t_e)  # (L, N, H_in)
-    r_pad = pad_sequence(r)
+    r_pad = pad_sequence(r).to(device)
     # t_e_packed = pack_padded_sequence(t_e_pad, t_e_lens, enforce_sorted=False)
     l = torch.tensor([dataset_mapping[base_dataset_name][x] for x in l], dtype=torch.long).to(device)
 
@@ -76,12 +77,12 @@ def tune_hp(config):
     
     return config
 
-def train(dataloader, enc, gen, loss_fn, optimizer):
-    running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_sel_loss", "trg_cont_loss", "trg_total_f1", "trg_tok_precision", "trg_tok_recall", "trg_tok_f1"]
+def train(dataloader, enc, gen, optimizer):
+    running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_mask_loss", "trg_total_f1", "trg_tok_precision", "trg_tok_recall", "trg_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
-    total_params = len(tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters())))
-    mean_grads = torch.zeros(total_params).to(device)
-    var_grads = torch.zeros(total_params).to(device)
+    # total_params = len(tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters())))
+    # mean_grads = torch.zeros(total_params).to(device)
+    # var_grads = torch.zeros(total_params).to(device)
 
     gen.train()
     enc.train()
@@ -95,10 +96,14 @@ def train(dataloader, enc, gen, loss_fn, optimizer):
 
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
-        obj_loss = loss_fn(logit, l)
-        loss = selection_cost + continuity_cost + obj_loss
+        # print(f"mask: {mask.type()}")
+        # print(f"r_pad: {r_pad.type()}")
+        if args.sup: mask_sup_loss = nn.BCELoss()(mask, r_pad)
+        else: mask_sup_loss = torch.tensor(0)
+        obj_loss = nn.CrossEntropyLoss()(logit, l)
+        loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
         f1 = f1_score(l.detach().cpu(), y_pred, average="macro")
-        tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask.detach().cpu(), r_pad.detach(), t_e_lens)
+        tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask.detach().cpu(), r_pad.detach().cpu(), t_e_lens)
 
         # Backpropagation
         optimizer.zero_grad()
@@ -106,25 +111,26 @@ def train(dataloader, enc, gen, loss_fn, optimizer):
         optimizer.step()
 
         # tracking metrics
-        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), selection_cost.detach(), continuity_cost.detach(), f1, tok_p, tok_r, tok_f1])
+        mask_loss = selection_cost.detach() + continuity_cost.detach() + mask_sup_loss.detach()
+        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), mask_loss, f1, tok_p, tok_r, tok_f1])
 
         # tracking gradients
-        t_n_p = tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters()))
-        for i, (_, p) in enumerate(t_n_p):
-            var, mean = torch.var_mean(p.grad.detach().abs())  # abs to ensure gradient's don't cancel out to wrongly indicate vanishing grad
-            mean_grads[i] += mean
-            var_grads[i] += var
+        # t_n_p = tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters()))
+        # for i, (_, p) in enumerate(t_n_p):
+        #     var, mean = torch.var_mean(p.grad.detach().abs())  # abs to ensure gradient's don't cancel out to wrongly indicate vanishing grad
+        #     mean_grads[i] += mean
+        #     var_grads[i] += var
             
 
     total_scalar_metrics = running_scalar_metrics / (batch + 1)
     scalar_metrics = {}
     for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i]
 
-    tensor_metrics = {
-        "mean_grads": (mean_grads / (batch + 1)).cpu(),
-        "var_grads": (var_grads / (batch + 1)).cpu()
-    }
-    return scalar_metrics, tensor_metrics
+    # tensor_metrics = {
+    #     "mean_grads": (mean_grads / (batch + 1)).cpu(),
+    #     "var_grads": (var_grads / (batch + 1)).cpu()
+    # }
+    return scalar_metrics, _
 
 def test(dataloader, enc, gen):
     running_scalar_labels = ["val_f1", "val_tok_precision", "val_tok_recall", "val_tok_f1"]
@@ -135,11 +141,11 @@ def test(dataloader, enc, gen):
     with torch.no_grad():
         for batch, (t_e_pad, t_e_lens, r_pad, l, ann_id) in enumerate(tqdm(dataloader)):        
             mask = gen(t_e_pad, t_e_lens)
-            logit = enc(t_e_pad, t_e_lens, mask=mask)  # indep: change mask to none
+            logit = enc(t_e_pad, t_e_lens, mask=mask)  # NOTE: to test gen and enc independently, change mask to none
             probs = nn.Softmax(dim=1)(logit.detach().cpu())
             y_pred = torch.argmax(probs, dim=1)
             f1 = f1_score(l.detach().cpu(), y_pred, average="macro")
-            tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask.detach().cpu(), r_pad.detach(), t_e_lens)
+            tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask.detach().cpu(), r_pad.detach().cpu(), t_e_lens)
 
             running_scalar_metrics += torch.tensor([f1, tok_p, tok_r, tok_f1])
 
@@ -153,7 +159,8 @@ def main():
     args = parse_args()
     logger.info(args)
     
-    if os.path.exists(args.out_dir): shutil.rmtree(args.out_dir, ignore_errors=True)
+    if os.path.exists(args.out_dir): 
+        shutil.rmtree(args.out_dir)
     os.makedirs(args.out_dir)
     base_dataset_name = get_base_dataset_name(os.path.basename(args.data_dir))
     writer = SummaryWriter(args.out_dir)
@@ -161,8 +168,7 @@ def main():
     config = read_json(args.config)
     if args.tune_hp:
         config = tune_hp(config)
-        write_json(config, os.path.join(args.out_dir, "new_config.json"))
-
+    write_json(config, os.path.join(args.out_dir, "config.json"))
     config["encoder"]["num_classes"] = get_num_classes(base_dataset_name)
 
     
@@ -191,11 +197,12 @@ def main():
     # instantiate models
     enc = Encoder(config["encoder"]).to(device)
     gen = Generator(config["generator"]).to(device)
+
+    # Note: no longer used
     # for gradient flow tracking later
-    layer_names = [n for n, _ in tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters()))]  
+    # layer_names = [n for n, _ in tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters()))]  
 
     # instantiate optimiser
-    loss_fn = nn.CrossEntropyLoss()
     optimizer = get_optimizer([gen, enc], config["train"]["lr"])
     scheduler = ReduceLROnPlateau(optimizer, 'max', patience=2)
 
@@ -204,7 +211,7 @@ def main():
     es_count = 0
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
-        train_scalar_metrics, train_tensor_metrics = train(train_dataloader, enc, gen, loss_fn, optimizer)
+        train_scalar_metrics, _ = train(train_dataloader, enc, gen, optimizer)
         val_scalar_metrics = test(val_dataloader, enc, gen)
         overall_scalar_metrics = {**train_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]
@@ -214,8 +221,8 @@ def main():
         for tag, val in overall_scalar_metrics.items():
             writer.add_scalar(tag, val, t)
         writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], t)
-        plot_grad_flow(train_tensor_metrics["mean_grads"], train_tensor_metrics["var_grads"], layer_names, os.path.join(args.out_dir, f"model_grad_flow_{t}.png"))
-        del train_tensor_metrics
+        # plot_grad_flow(train_tensor_metrics["mean_grads"], train_tensor_metrics["var_grads"], layer_names, os.path.join(args.out_dir, f"model_grad_flow_{t}.png"))
+        # del train_tensor_metrics
 
         # early stopping
         if val_target_metric > best_val_target_metric:

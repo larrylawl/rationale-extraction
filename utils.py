@@ -360,7 +360,7 @@ def create_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_
         token_embeddings.extend(wp_e)
 
         # generate rationale from wordpiece embeddings
-        r = [0] * wp_e.size()[0]
+        r = [0.0] * wp_e.size()[0]
         # r = torch.zeros(wp_e.size()[0])
         # special_tokens_mask = [int(id == None) for id in inputs.word_ids()]  # proxy for special tokens mask. None == Special Tokens. Integer = otherwise.
         # assert len(r) == len(special_tokens_mask)
@@ -372,7 +372,7 @@ def create_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_
                 wp_span = inputs.token_to_chars(i)
                 is_rat = reduce(lambda prev, span: prev or is_subspan(wp_span, span), document_evidence_map[docid], False)
                 if is_rat:
-                    r[i] = 1 
+                    r[i] = 1.0 
                     is_token_in_evd = reduce(lambda prev, evd: prev or tokens[i] in evd, document_evidence_str_map[docid], False)
                     if not is_token_in_evd and tokens[i] != '[UNK]':
                         logger.warning(f"{tokens[i]} is not found in evidence {document_evidence_str_map}! annotation_id: {annotation_id}")
@@ -380,7 +380,7 @@ def create_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_
                         # raise ValueError
                     # if not is_token_in_evd: logger.warn(f"{tokens[i]} is not found in evidence {document_evidence_str_map}!")
                 else:
-                    r[i] = 0
+                    r[i] = 0.0
 
         rationale.extend(r)
 
