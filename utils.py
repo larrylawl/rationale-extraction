@@ -20,19 +20,21 @@ import random
 @dataclass(eq=True, frozen=True)
 class Evidence:
     """
-    (docid, start_character, end_character) form the only official Evidence; sentence level annotations are for convenience.
+    (docid, start_char, end_char) form the only official Evidence; sentence level annotations are for convenience.
     Args:
         text: Some representation of the evidence text
         docid: Some identifier for the document
-        start_character: The canonical start character, inclusive
-        end_character: The canonical end token, exclusive
+        start_char: The canonical start char, inclusive
+        end_char: The canonical end token, exclusive
         start_sentence: Best guess start sentence, inclusive
         end_sentence: Best guess end sentence, exclusive
     """
     text: Union[str, List[int]]
     docid: str
-    start_char: int=-1
-    end_char: int=-1
+    # start_char: int=-1
+    # end_char: int=-1
+    start_token: int = -1
+    end_token: int = -1
     start_sentence: int=-1
     end_sentence: int=-1
 
@@ -64,17 +66,6 @@ class Annotation:
     def all_evidences(self) -> Tuple[Evidence]:
         return tuple(list(chain.from_iterable(self.evidences)))
     
-
-@dataclass(eq=True, frozen=True)
-class Instance:
-    """
-    """
-    token_embeddings: Tensor
-    rationale: List[int]
-    kept_tokens: List[int]
-    label: str
-    annotation_id: str
-
 
 def annotations_to_jsonl(annotations, output_file, mode='w'):
     with open(output_file, mode, encoding='utf-8') as of:
@@ -187,9 +178,6 @@ def load_documents(data_dir: str, docids: Set[str]=None) -> Dict[str, str]:
 
 def load_documents_from_file(data_dir: str, docids: Set[str]=None) -> Dict[str, str]:
     """Loads a subset of available documents from 'docs.jsonl' file on disk.
-
-    Each document is assumed to be serialized as newline ('\n') separated sentences.
-    Each sentence is assumed to be space (' ') joined tokens.
     """
     docs_file = os.path.join(data_dir, 'docs.jsonl')
     documents = load_jsonl(docs_file)
@@ -218,7 +206,8 @@ def generate_document_evidence_map(evidences: List[List[Evidence]]) -> Dict[str,
         for evclause in evgroup:
             if evclause.docid not in document_evidence_map:
                 document_evidence_map[evclause.docid] = []
-            document_evidence_map[evclause.docid].append((evclause.start_char, evclause.end_char))
+            # document_evidence_map[evclause.docid].append((evclause.start_char, evclause.end_char))
+            document_evidence_map[evclause.docid].append((evclause.start_token, evclause.end_token))
 
     return document_evidence_map
 
@@ -264,7 +253,7 @@ def get_wordpiece_embeddings(inputs: Dict, model) -> Tensor:
     
     return wordpiece_embeddings
 
-def get_token_embeddings(string, tokenizer, embedding_model, merge_strategy = "first"):
+def get_token_embeddings(string, tokenizer, embedding_model, merge_strategy = "average"):
     """ Retrieves token embeddings by accumulating wordpiece embeddings based on merge strategy.
     Identify wordpiece to tokens by checking if their character span is in subset of the original token char span. """
     def _merge_embeddings(wp_e, stack):
@@ -386,6 +375,56 @@ def create_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_
     # assert docids == docids_2, f"{docids} != {docids_2}"
 
     document_evidence_map: Dict[str, List[Tuple[int, int]]] = generate_document_evidence_map(evidences)
+    assert set(document_evidence_map.keys()).issubset(set(docids)), "Evidence should come from docids!"
+
+    token_embeddings = []
+    rationale = []
+    # TODO: kept_tokens doesn't make sense from backprop persp - deterministic alteration to op fn.
+    # kept_tokens = []
+
+    for docid in docids:
+        # get token embeddings
+        t_e = get_token_embeddings(docs[docid], tokenizer, embedding_model)
+        token_embeddings.extend(t_e)
+        
+        # get rationale
+        r = [0.0] * len(t_e)
+        if docid in document_evidence_map:
+            for s, e in document_evidence_map[docid]: 
+                r[s:e] = [1.0] * (e - s)
+
+        rationale.extend(r)
+
+        # generate kept tokens
+        # k_t = special_tokens_mask  
+        # kept_tokens.extend(k_t)
+    
+    if query != "" and type(query) != list:
+        assert False, f"Only e-snli supported for now.: {query}"
+        inputs = tokenizer(query, return_tensors="pt")
+        wp_e = get_wordpiece_embeddings(inputs, embedding_model)
+        token_embeddings.extend(wp_e)
+        rationale.extend([1] * wp_e.size()[0])  # query are always considered evidence
+        kept_tokens.extend([1] * wp_e.size()[0])
+
+    token_embeddings = torch.stack(token_embeddings, dim = 0)
+    rationale = torch.tensor(rationale)
+    assert token_embeddings.size()[0] == len(rationale)
+
+    return token_embeddings, rationale, label, annotation_id
+
+def create_wp_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_model, logger=None):
+    """ Note: This creates wordpiece not token embeddings. No longer supported as it's difficult to align WP embeddings.  """
+    annotation_id: str = ann.annotation_id
+    evidences: List[List[Evidence]] = ann.evidences
+    label: str = str(ann.classification)
+    query: str = ann.query 
+
+    docids: List[str] = sorted([f"{annotation_id}_premise", f"{annotation_id}_hypothesis"]) # only for esnli
+    # docids_2: List[str] = sorted(list(set([evclause.docid for evgroup in evidences for evclause in evgroup])))  # easily overfit esnli: contradiction both premise and hypothesis, neutral only hypothesis.
+    # assert docids == docids_2, f"{docids} != {docids_2}"
+
+    document_evidence_map: Dict[str, List[Tuple[int, int]]] = generate_document_evidence_map(evidences)
     document_evidence_str_map: Dict[str, List[str]] = generate_document_evidence_string_map(evidences)  # for assertion later
     assert set(document_evidence_map.keys()).issubset(set(docids)), "Evidence should come from docids!"
 
@@ -395,11 +434,6 @@ def create_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_
     # kept_tokens = []
 
     for docid in docids:
-        t_e = get_token_embeddings(docs[docid], tokenizer, embedding_model)
-        assert len(t_e) == len(docs[docid])
-
-        
-
         # tokenizer - return special tokens mask information for always kept.
         inputs = tokenizer(docs[docid], truncation=True, return_tensors="pt", add_special_tokens = False)
         tokens = tokenizer.tokenize(docs[docid], truncation=True, add_special_tokens = False)  # for sanity check later
@@ -450,15 +484,6 @@ def create_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_
     token_embeddings = torch.stack(token_embeddings, dim = 0)
     rationale = torch.tensor(rationale)
     assert token_embeddings.size()[0] == len(rationale)
-
-    # i = Instance(token_embeddings, rationale, kept_tokens, label, annotation_id)
-    # i = {
-    #     "token_embeddings": token_embeddings,
-    #     "rationale": rationale,
-    #     "kept_tokens": kept_tokens,
-    #     "label": label,
-    #     "annotation_id": annotation_id
-    # }
 
     return token_embeddings, rationale, label, annotation_id
 
@@ -585,17 +610,17 @@ def test_get_wordpiece_embeddings():
     
     # english
     en = "After stealing money from the bank vault, the bank robber was seen fishing on the Mississippi river bank."
-    inputs = tokenizer(en, return_tensors="pt")
+    inputs = tokenizer(en, return_tensors="pt", truncation=True, add_special_tokens=False)
     we_en = get_wordpiece_embeddings(inputs, model)
 
-    tokens = tokenizer.tokenize(en, add_special_tokens = True)
+    tokens = tokenizer.tokenize(en, truncation=True, add_special_tokens=False)
+    assert len(we_en) == len(tokens)
     ids = [i for i, x in enumerate(tokens) if x == "bank"]
 
     same_bank = 1 - cosine(we_en[ids[0]], we_en[ids[1]])
     diff_bank = 1 - cosine(we_en[ids[0]], we_en[ids[2]])
     print(f"diff_bank vs same_bank for en: {diff_bank} vs {same_bank}")
     assert same_bank > diff_bank
-
 
 def test_get_token_embeddings():
     from transformers import AutoModel
@@ -612,7 +637,7 @@ def test_get_token_embeddings():
     
     # english
     en = "After stealing money from the bank vault, the bank robber was seen fishing on the Mississippi river bank."
-    t_en = get_token_embeddings(en, tokenizer, model, merge_strategy="average")
+    t_en = get_token_embeddings(en, tokenizer, model, merge_strategy="first")
 
     ids = [i for i, x in enumerate(en.split()) if "bank" in x]
 
@@ -621,6 +646,16 @@ def test_get_token_embeddings():
     print(f"diff_bank vs same_bank for en: {diff_bank} vs {same_bank}")
     assert same_bank > diff_bank
 
+    inputs = tokenizer(en, return_tensors="pt", truncation=True, add_special_tokens=False)
+    we_en = get_wordpiece_embeddings(inputs, model)
+
+    tokens = tokenizer.tokenize(en, truncation=True, add_special_tokens=False)
+    assert len(we_en) == len(tokens)
+    we_ids = [i for i, x in enumerate(tokens) if x == "bank"]
+    # token and wordpiece embeddings should be same since "bank" is not split further.
+    assert torch.equal(t_en[ids[0]], we_en[we_ids[0]])
+    assert torch.equal(t_en[ids[1]], we_en[we_ids[1]])
+    assert torch.equal(t_en[ids[2]], we_en[we_ids[2]])
 
 def test_merge_wordpiece_embeddings_by_word_ids():
     embeddings = torch.rand(26, 13, 768)
@@ -685,8 +720,8 @@ if __name__ == "__main__":
     print("Running unit tests...")
     # test_merge_character_spans()
     # test_merge_wordpiece_embeddings_by_word_ids()
-    # test_gen_loss()
-    # test_score_hard_rationale_predictions()
+    test_gen_loss()
+    test_score_hard_rationale_predictions()
     test_get_wordpiece_embeddings()
     test_get_token_embeddings()
     print("Unit tests passed!")
