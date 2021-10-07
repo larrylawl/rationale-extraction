@@ -264,9 +264,19 @@ def get_wordpiece_embeddings(inputs: Dict, model) -> Tensor:
     
     return wordpiece_embeddings
 
-def get_token_embeddings(string, tokenizer, embedding_model, merge_strategy="first"):
+def get_token_embeddings(string, tokenizer, embedding_model, merge_strategy = "first"):
     """ Retrieves token embeddings by accumulating wordpiece embeddings based on merge strategy.
     Identify wordpiece to tokens by checking if their character span is in subset of the original token char span. """
+    def _merge_embeddings(wp_e, stack):
+        if merge_strategy == "average": 
+            t_e = torch.mean(wp_e[stack], 0)
+        elif merge_strategy == "first":
+            t_e = wp_e[stack[0]]
+        else:
+            raise NotImplementedError
+        return t_e
+
+
     inputs = tokenizer(string, truncation=True, return_tensors="pt", add_special_tokens = False)
     wp_e = get_wordpiece_embeddings(inputs, embedding_model)
 
@@ -282,19 +292,16 @@ def get_token_embeddings(string, tokenizer, embedding_model, merge_strategy="fir
         wp_span = inputs.token_to_chars(i)
         if is_subspan(wp_span, t_span): stack.append(i)
         else: 
-            if merge_strategy == "average": 
-                t_e = torch.mean(wp_e[stack], 0)
-            elif merge_strategy == "first":
-                t_e = wp_e[stack[0]]
+            t_e = _merge_embeddings(wp_e, stack)
             result.append(t_e)
             t_span = next(token_spans) # if error is thrown, sth is wrong as every wp should be a subspan of some token
 
             assert is_subspan(wp_span, t_span)
-            stack.append(i)
+            stack = [i]  # initialise stack with current idx
     
     # clear remaining accumulated tensors
-    avg_e = torch.mean(wp_e[stack], 0)
-    result.append(avg_e)
+    t_e = _merge_embeddings(wp_e, stack)
+    result.append(t_e)
 
     result = torch.stack(result, dim = 0)
     assert len(result) == len(string.split()), f"{len(result)} != {len(string.split())}"
@@ -605,11 +612,11 @@ def test_get_token_embeddings():
     
     # english
     en = "After stealing money from the bank vault, the bank robber was seen fishing on the Mississippi river bank."
-    t_en = get_token_embeddings(en, tokenizer, model)
+    t_en = get_token_embeddings(en, tokenizer, model, merge_strategy="average")
 
     ids = [i for i, x in enumerate(en.split()) if "bank" in x]
 
-    same_bank = 1 - cosine(t_en[ids[0]], t_en[ids[1]])
+    same_bank = 1 - cosine(t_en[ids[0]], t_en[ids[1]])  # cosine similarity
     diff_bank = 1 - cosine(t_en[ids[0]], t_en[ids[2]])
     print(f"diff_bank vs same_bank for en: {diff_bank} vs {same_bank}")
     assert same_bank > diff_bank
