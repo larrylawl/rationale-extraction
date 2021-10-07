@@ -384,7 +384,7 @@ def create_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_
 
     for docid in docids:
         # get token embeddings
-        t_e = get_token_embeddings(docs[docid], tokenizer, embedding_model)
+        t_e = get_token_embeddings(docs[docid], tokenizer, embedding_model, merge_strategy="average")
         token_embeddings.extend(t_e)
         
         # get rationale
@@ -592,6 +592,22 @@ def score_hard_rationale_predictions(mask_pad, rationale_pad, token_lengths):
     p, r, f1 = running_scores / len(token_lengths)
     return p, r, f1
 
+def top_k_idxs_multid(a, k):
+    """ https://stackoverflow.com/questions/64241325/top-k-indices-of-a-multi-dimensional-tensor """
+    v, i = torch.topk(a.flatten(), k)
+    res = torch.tensor(np.unravel_index(i.numpy(), a.shape)).T
+    return res
+
+def get_top_k_prob_mask(prob_mask, k):
+    """ Returns new tensor with top k most confident elements in mask retained. Rest are nan. """
+    prob_mask_flat = prob_mask.flatten()
+    conf_masks = torch.abs(prob_mask_flat - 0.5)
+    v, i = torch.topk(conf_masks, k)
+    res_flat = torch.full(prob_mask_flat.size(), -1.)
+    res_flat[i] = prob_mask_flat[i]
+    res = res_flat.view(prob_mask.size())
+    
+    return res
 
 ### TESTS
 
@@ -716,14 +732,37 @@ def test_score_hard_rationale_predictions():
     assert abs(p.item() - 0.4167) <= 0.0001, p
     assert abs(r.item() - 0.5) == 0, r
 
+def test_top_k_idxs_multid():
+    a = torch.tensor([[4, 9, 7, 4, 0],
+        [8, 1, 3, 1, 0],
+        [9, 8, 4, 4, 8],
+        [0, 9, 4, 7, 8],
+        [8, 8, 0, 1, 4]])
+    idxs = top_k_idxs_multid(a, 3)
+    expected = torch.tensor([[3, 1],
+        [2, 0],
+        [0, 1]])
+    assert torch.equal(idxs, expected), idxs
+
+def test_get_top_k_prob_mask():
+    prob_mask = torch.tensor([[0.7, 0.4], [0.1, 0.5]])
+    top_k_prob_mask = get_top_k_prob_mask(prob_mask, 2)
+    expected = torch.tensor([[0.7, -1.], [0.1, -1.]])
+    print(expected.type())
+    print(top_k_prob_mask.type())
+    assert torch.equal(top_k_prob_mask, expected), f"{top_k_prob_mask} != {expected}"
+    
+
 if __name__ == "__main__":
     print("Running unit tests...")
     # test_merge_character_spans()
     # test_merge_wordpiece_embeddings_by_word_ids()
-    test_gen_loss()
-    test_score_hard_rationale_predictions()
-    test_get_wordpiece_embeddings()
-    test_get_token_embeddings()
+    # test_gen_loss()
+    # test_score_hard_rationale_predictions()
+    # test_top_k_idxs_multid()
+    test_get_top_k_prob_mask()
+    # test_get_wordpiece_embeddings()
+    # test_get_token_embeddings()
     print("Unit tests passed!")
 
 

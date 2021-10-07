@@ -18,9 +18,10 @@ from tqdm import tqdm
 from models.encoder import Encoder
 from models.generator import Generator
 import random
+from functools import partial
 
 from pipeline.main import EraserDataset, train, test, pad_collate, tune_hp
-from utils import load_datasets, create_instance, load_documents, load_instances, get_num_classes, get_optimizer, dataset_mapping, get_base_dataset_name, read_json, write_json, plot_grad_flow, tracked_named_parameters, score_hard_rationale_predictions
+from utils import get_top_k_prob_mask, load_datasets, create_instance, load_documents, load_instances, get_num_classes, get_optimizer, dataset_mapping, get_base_dataset_name, read_json, top_k_idxs_multid, write_json, plot_grad_flow, tracked_named_parameters, score_hard_rationale_predictions
 
 logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadName)s %(message)s')
 # let's make this more or less deterministic (not resistent to restarts)
@@ -43,37 +44,49 @@ def parse_args():
 
     return parser.parse_args()
 
+class CotrainDataset(EraserDataset):
+    def __init__(self, anns, docs, tokenizer, embedding_model, logger, cotrain_mask):
+        super().__init__(anns, docs, tokenizer, embedding_model, logger)
+        self.cotrain_mask = cotrain_mask
+    
+    def __getitem__(self, idx: int):
+        t_e_pad, t_e_lens, r_pad, l, ann_id = super().__getitem__(idx)
+        return t_e_pad, t_e_lens, r_pad, l, ann_id, self.cotrain_mask[idx]
+        
+
+def custom_BCE():
+    # NOTE: current top_k_prob_mask has value -1 if unlabelled.
+    pass
+
 def cotrain(gen, train_dataset) -> EraserDataset:
     """ Augments Eraserdataset with self-labels. """
     gen.eval()
     # shuffle false for idx 0 to correspond to annotation 0.
     # batch size 1 to ensure padded tokens aren't selected (since there will be no padding)
-    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=False, collate_fn=pad_collate)
+    cotrain_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=False, collate_fn=partial(pad_collate, 0.5))  # pad embedding with 0.5 as we don't want padding to be selected
 
     with torch.no_grad():
         # forward pass to obtain prob of all tokens
-        masks = []
-        for batch, (t_e_pad, t_e_lens, r_pad, l, _) in enumerate(tqdm(train_dataloader)): 
+        prob_mask = []
+        for batch, (t_e_pad, t_e_lens, r_pad, l, _) in enumerate(tqdm(cotrain_dataloader)): 
             mask = gen(t_e_pad, t_e_lens)
-            
-            ### TODO ###
-            # alignment is on token level, but mask is now word piece level...
-            # Fix by merging wordpiece embeddings to token level via char_spans
-            # zero out those which cannot be aligned - not beneficial at all
-
-            masks.append(mask)
+            prob_mask.append(mask)
 
         # label top 1% of most confident tokens
         ##  pad sequence with padding value of 0.5 => confidence == 0 => pading won't be selected
-        ##  then torch.unbind to unstack
-        # masks = pad_sequence(masks, padding_value=0.5)  # 0.5 => confidence == 0 => won't be selected
-        
+        prob_mask = pad_sequence(prob_mask, padding_value = 0.5)  # (T, B, *)
+        prob_mask = torch.unbind(prob_mask, dim=1)  # (T, *), unstack padded tensors
+        assert prob_mask.size() == algn_mask.size()
+        prob_mask[algn_mask == -1] = 0.5  # ensure that tokens with no alignment are not selected
+        top_k_prob_mask = get_top_k_prob_mask(prob_mask, k)
+
+        # TODO: use indexes in alignment mask to map labels from src mask to tgt mask
 
 
-    ## label these tokens on both datasets || perfect labels
-    ## -1: None, 0: False, 1: True
-    # return numpy array of self labels, idx 0 correspond to annotation 0. pass it to dataloader
-    pass
+    assert len(top_k_prob_mask) == len(train_dataset), "Row i of prob mask corresponds to self labels for ith annotation."
+    train_dataset = CotrainDataset(train_dataset.anns, train_dataset.docs, train_dataset.tokenizer, train_dataset.embedding_model, train_dataset.logger, top_k_prob_mask)
+    train_dataloader = DataLoader(train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
+    return train_dataloader
 
 def main():
     start_time = time.time()

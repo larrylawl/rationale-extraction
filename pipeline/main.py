@@ -58,12 +58,11 @@ class EraserDataset(Dataset):
     def __getitem__(self, idx: int):
         return create_instance(self.anns[idx], self.docs, self.tokenizer, self.embedding_model, self.logger)
 
-def pad_collate(batch):
-    # TODO: pad for rationale
+def pad_collate(batch, embedding_padding_value=0):
     (t_e, r, l, ann_id) = zip(*batch)
     t_e_lens = [t.size()[0] for t in t_e]
 
-    t_e_pad = pad_sequence(t_e)  # (L, N, H_in)
+    t_e_pad = pad_sequence(t_e, padding_value = embedding_padding_value)  # (L, N, H_in)
     r_pad = pad_sequence(r).to(device)
     # t_e_packed = pack_padded_sequence(t_e_pad, t_e_lens, enforce_sorted=False)
     l = torch.tensor([dataset_mapping[base_dataset_name][x] for x in l], dtype=torch.long).to(device)
