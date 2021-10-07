@@ -1,6 +1,7 @@
 import json
 import os
 import unicodedata
+import nltk
 
 from functools import reduce
 from collections import deque
@@ -263,8 +264,46 @@ def get_wordpiece_embeddings(inputs: Dict, model) -> Tensor:
     
     return wordpiece_embeddings
 
-def merge_wordpiece_embeddings(embeddings: Tensor, word_ids: List) -> Tensor:
-    """ Merges wordpiece embeddings by averaging them. """
+def get_token_embeddings(string, tokenizer, embedding_model, merge_strategy="first"):
+    """ Retrieves token embeddings by accumulating wordpiece embeddings based on merge strategy.
+    Identify wordpiece to tokens by checking if their character span is in subset of the original token char span. """
+    inputs = tokenizer(string, truncation=True, return_tensors="pt", add_special_tokens = False)
+    wp_e = get_wordpiece_embeddings(inputs, embedding_model)
+
+    ws_tokenizer = nltk.tokenize.WhitespaceTokenizer()
+    token_spans = ws_tokenizer.span_tokenize(string)
+
+    # merging wordpiece embeddings
+    result = []
+    stack = []  # initialise stack with idx
+
+    t_span = next(token_spans)
+    for i in range(len(wp_e)):
+        wp_span = inputs.token_to_chars(i)
+        if is_subspan(wp_span, t_span): stack.append(i)
+        else: 
+            if merge_strategy == "average": 
+                t_e = torch.mean(wp_e[stack], 0)
+            elif merge_strategy == "first":
+                t_e = wp_e[stack[0]]
+            result.append(t_e)
+            t_span = next(token_spans) # if error is thrown, sth is wrong as every wp should be a subspan of some token
+
+            assert is_subspan(wp_span, t_span)
+            stack.append(i)
+    
+    # clear remaining accumulated tensors
+    avg_e = torch.mean(wp_e[stack], 0)
+    result.append(avg_e)
+
+    result = torch.stack(result, dim = 0)
+    assert len(result) == len(string.split()), f"{len(result)} != {len(string.split())}"
+    return result
+
+def merge_wordpiece_embeddings_by_word_ids(embeddings: Tensor, word_ids: List) -> Tensor:
+    """ Merges wordpiece embeddings by averaging them. 
+    Note: word_ids don't work as they cannot retrieve original tokens for some tokens (e.g. "l'argent")
+    """
 
     result = []
     stack = [0]  # initialise stack
@@ -349,6 +388,11 @@ def create_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_
     # kept_tokens = []
 
     for docid in docids:
+        t_e = get_token_embeddings(docs[docid], tokenizer, embedding_model)
+        assert len(t_e) == len(docs[docid])
+
+        
+
         # tokenizer - return special tokens mask information for always kept.
         inputs = tokenizer(docs[docid], truncation=True, return_tensors="pt", add_special_tokens = False)
         tokens = tokenizer.tokenize(docs[docid], truncation=True, add_special_tokens = False)  # for sanity check later
@@ -526,8 +570,8 @@ def test_get_wordpiece_embeddings():
 
     from scipy.spatial.distance import cosine
 
-    model_name = 'bert-base-uncased'
-    # model_name = 'bert-base-multilingual-cased'
+    # model_name = 'bert-base-uncased'
+    model_name = 'bert-base-multilingual-cased'
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name, output_hidden_states = True)
     model.eval()
@@ -543,19 +587,43 @@ def test_get_wordpiece_embeddings():
     same_bank = 1 - cosine(we_en[ids[0]], we_en[ids[1]])
     diff_bank = 1 - cosine(we_en[ids[0]], we_en[ids[2]])
     print(f"diff_bank vs same_bank for en: {diff_bank} vs {same_bank}")
-    
-    assert abs(same_bank - 0.93890) < 0.0001 
-    assert abs(diff_bank - 0.69093) < 0.0001 
+    assert same_bank > diff_bank
 
-def test_merge_wordpiece_embeddings():
+
+def test_get_token_embeddings():
+    from transformers import AutoModel
+    from transformers import AutoTokenizer
+    """ Tests for contextual embeddings. Follows https://mccormickml.com/2019/05/14/BERT-word-embeddings-tutorial/#2-input-formatting. """
+
+    from scipy.spatial.distance import cosine
+
+    # model_name = 'bert-base-uncased'
+    model_name = 'bert-base-multilingual-cased'
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name, output_hidden_states = True)
+    model.eval()
+    
+    # english
+    en = "After stealing money from the bank vault, the bank robber was seen fishing on the Mississippi river bank."
+    t_en = get_token_embeddings(en, tokenizer, model)
+
+    ids = [i for i, x in enumerate(en.split()) if "bank" in x]
+
+    same_bank = 1 - cosine(t_en[ids[0]], t_en[ids[1]])
+    diff_bank = 1 - cosine(t_en[ids[0]], t_en[ids[2]])
+    print(f"diff_bank vs same_bank for en: {diff_bank} vs {same_bank}")
+    assert same_bank > diff_bank
+
+
+def test_merge_wordpiece_embeddings_by_word_ids():
     embeddings = torch.rand(26, 13, 768)
     word_ids = [None, 0, 1, 1, 1, 2, 3, 4, 5, 6, 6, 7, 8, 9, 10, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, None]
-    merged_embeddings = merge_wordpiece_embeddings(embeddings, word_ids)
+    merged_embeddings = merge_wordpiece_embeddings_by_word_ids(embeddings, word_ids)
     assert merged_embeddings.size()[0] == len(set(word_ids)) + 1  # +1 to account for None
 
     embeddings = torch.tensor([[0., 0.], [1., -1.], [2., -2.], [3., -3.]])  # 4x2
     word_ids = [None, 0, 0, None]
-    merged_embeddings = merge_wordpiece_embeddings(embeddings, word_ids)
+    merged_embeddings = merge_wordpiece_embeddings_by_word_ids(embeddings, word_ids)
     expected_embeddings = torch.tensor([[0., 0.], [1.5, -1.5], [3, -3]])
     assert torch.equal(merged_embeddings, expected_embeddings)
 
@@ -609,10 +677,11 @@ def test_score_hard_rationale_predictions():
 if __name__ == "__main__":
     print("Running unit tests...")
     # test_merge_character_spans()
-    # test_merge_wordpiece_embeddings()
-    test_gen_loss()
-    test_score_hard_rationale_predictions()
+    # test_merge_wordpiece_embeddings_by_word_ids()
+    # test_gen_loss()
+    # test_score_hard_rationale_predictions()
     test_get_wordpiece_embeddings()
+    test_get_token_embeddings()
     print("Unit tests passed!")
 
 
