@@ -1,7 +1,7 @@
 import sys; sys.path.insert(0, "..")
 import os
-from itertools import chain
-import json
+import time
+import datetime
 import logging
 import shutil
 import torch
@@ -155,15 +155,16 @@ def test(dataloader, enc, gen):
         return scalar_metrics
 
 def main():
+    start_time = time.time()
     global args, device, base_dataset_name, writer, config
     args = parse_args()
     logger.info(args)
     
-    if os.path.exists(args.out_dir): 
-        shutil.rmtree(args.out_dir)
+    if os.path.exists(args.out_dir): shutil.rmtree(args.out_dir)
     os.makedirs(args.out_dir)
     base_dataset_name = get_base_dataset_name(os.path.basename(args.data_dir))
     writer = SummaryWriter(args.out_dir)
+    write_json(vars(args), os.path.join(args.out_dir, "exp_args.json"))
 
     config = read_json(args.config)
     if args.tune_hp:
@@ -228,7 +229,8 @@ def main():
         if val_target_metric > best_val_target_metric:
             best_val_target_metric = val_target_metric
             es_count = 0
-            torch.save(enc.state_dict(), os.path.join(args.out_dir, "best_encoder_weights.pth"))
+            torch.save(gen.state_dict(), os.path.join(args.out_dir, "best_gen_weights.pth"))
+            torch.save(enc.state_dict(), os.path.join(args.out_dir, "best_enc_weights.pth"))
         else: 
             es_count += 1
             if es_count >= config["train"]["patience"]: 
@@ -236,9 +238,10 @@ def main():
                 break
     logger.info("Done training!")
     logger.info("Evaluating best model on test set")
-    enc.load_state_dict(torch.load(os.path.join(args.out_dir, "best_encoder_weights.pth")))
+    gen.load_state_dict(torch.load(os.path.join(args.out_dir, "best_gen_weights.pth")))
+    enc.load_state_dict(torch.load(os.path.join(args.out_dir, "best_enc_weights.pth")))
     test_scalar_metrics = test(test_dataloader, enc, gen)
-
+    test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
     write_json(test_scalar_metrics, os.path.join(args.out_dir, "results.json"))
 
 if __name__ == "__main__":
