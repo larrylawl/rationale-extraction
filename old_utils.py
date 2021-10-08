@@ -230,3 +230,20 @@ def load_documents_from_file(data_dir: str, docids: Set[str]=None) -> Dict[str, 
         tokenized = [line.strip().split(' ') for line in lines]
         res[d] = tokenized
     return res
+
+
+def get_algn_grid(was, train_anns):
+    """ Creates alignment mask of cross product indexes (i.e. index [i, j] indicates that there is an alignment for src token i of annotation j)
+    cross pdt idx: https://numpy.org/doc/stable/reference/generated/numpy.ix_.html
+    """
+
+    """ Updates alignment mask with values in word alignment.
+    [i, j] == k denotes the ith token of src aligns to the kth token of tgt for the jth annotation. 
+    k == -1 if alignment does not exist.
+    """
+    algn_seq = [] 
+    for i, ann in enumerate(train_anns):
+        wa = parse_alignment(was[ann.annotation_id]["alignment"])
+        for k in wa.keys(): algn_seq.extend([k, i])
+    algn_grid = np.ix_(*algn_seq)
+    return algn_grid

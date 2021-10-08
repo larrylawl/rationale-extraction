@@ -39,7 +39,7 @@ class Evidence:
     end_sentence: int=-1
 
 
-@dataclass(eq=True, frozen=True)
+@dataclass(eq=True)
 class Annotation:
     """
     Args:
@@ -62,6 +62,7 @@ class Annotation:
     classification: str
     query_type: str = None
     docids: Set[str] = None
+    alignment: Dict[int, List[int]] = None
 
     def all_evidences(self) -> Tuple[Evidence]:
         return tuple(list(chain.from_iterable(self.evidences)))
@@ -111,10 +112,23 @@ def load_jsonl(fp: str) -> List[dict]:
     with open(fp, 'r', encoding='utf-8') as inf:
         for line in inf:
             line = preprocess_line(line)
-            # line = unicodedata.normalize("NFKD", line)  # load french spaces properly
             js = json.loads(line)
             ret.append(js)
     return ret
+
+def load_id_jsonl_as_dict(fp: str) -> Dict:
+    """ Loads jsonl with doc id as a dictionary that maps docid to dictionary that contains the      remaining key-value pairs of the original json.
+    """
+    op = {}
+    with open(fp, 'r', encoding='utf-8') as inf:
+        for line in inf:
+            line = preprocess_line(line)
+            js = json.loads(line)
+            docid = js["docid"]
+            del js["docid"]
+            assert docid not in op, "Document ids should be unique!"
+            op[docid] = js
+    return op
 
 def write_jsonl(jsonl, output_file):
     with open(output_file, 'w', encoding='utf-8') as of:
@@ -175,6 +189,17 @@ def load_documents(data_dir: str, docids: Set[str]=None) -> Dict[str, str]:
 
             # res[d] = unicodedata.normalize("NFKD", inf.read().splitlines())
     return res
+
+def load_flattened_documents(data_dir: str, docids: Set[str]=None) -> Dict[str, List[str]]:
+    """Loads a subset of available documents from disk.
+
+    Returns a tokenized version of the document.
+    """
+    unflattened_docs = load_documents(data_dir, docids)
+    flattened_docs = dict()
+    for doc, unflattened in unflattened_docs.items():
+        flattened_docs[doc] = list(chain.from_iterable(unflattened))
+    return flattened_docs
 
 def load_documents_from_file(data_dir: str, docids: Set[str]=None) -> Dict[str, str]:
     """Loads a subset of available documents from 'docs.jsonl' file on disk.
@@ -365,12 +390,14 @@ def merge_character_spans(batch_encoding) -> List[Tuple[int]]:
     return result
 
 def create_instance(ann: Annotation, docs: Dict[str, str], tokenizer, embedding_model, logger=None):
+    # TODO: return list indicating alignment
+
     annotation_id: str = ann.annotation_id
     evidences: List[List[Evidence]] = ann.evidences
     label: str = str(ann.classification)
     query: str = ann.query 
 
-    docids: List[str] = sorted([f"{annotation_id}_premise", f"{annotation_id}_hypothesis"]) # only for esnli
+    docids: List[str] = [f"{annotation_id}_hypothesis", f"{annotation_id}_premise"] # only for esnli
     # docids_2: List[str] = sorted(list(set([evclause.docid for evgroup in evidences for evclause in evgroup])))  # easily overfit esnli: contradiction both premise and hypothesis, neutral only hypothesis.
     # assert docids == docids_2, f"{docids} != {docids_2}"
 
@@ -599,16 +626,46 @@ def top_k_idxs_multid(a, k):
     return res
 
 def get_top_k_prob_mask(prob_mask, k):
-    """ Returns new tensor with top k most confident elements in mask retained. Rest are nan. """
+    """ Returns new tensor with top k most confident elements in mask retained. Rest are 0. """
     prob_mask_flat = prob_mask.flatten()
     conf_masks = torch.abs(prob_mask_flat - 0.5)
     v, i = torch.topk(conf_masks, k)
-    res_flat = torch.full(prob_mask_flat.size(), -1.)
+    res_flat = torch.sparse_coo_tensor()
+    res_flat = torch.zeros(prob_mask_flat.size())
     res_flat[i] = prob_mask_flat[i]
     res = res_flat.view(prob_mask.size())
     
     return res
 
+def parse_alignment(algn: str, reverse=False) -> Dict[int, List[int]]:
+    """ Returns dictionary whose key i and sorted array of values j corresponds to the i-j Pharaoh format of input alignment.
+    """
+    op = {}
+    was = algn.split()
+    for wa in was:
+        i, j = wa.split("-")
+        i, j = int(i), int(j)
+        if reverse:
+            if j not in op:
+                op[j] = [i]
+            else:
+                op[j].append(i)
+                op[j].sort()
+        else:
+            if i not in op:
+                op[i] = [j]
+            else:
+                op[i].append(j)
+                op[i].sort()
+
+    return op
+
+def add_offsets(wa: Dict[int, List[int]], key_offset, val_offset):
+    res = {}
+    for k, v in wa.items():
+        res[k + key_offset] = [x+val_offset for x in v]
+    return res
+    
 ### TESTS
 
 def test_get_wordpiece_embeddings():
@@ -747,7 +804,7 @@ def test_top_k_idxs_multid():
 def test_get_top_k_prob_mask():
     prob_mask = torch.tensor([[0.7, 0.4], [0.1, 0.5]])
     top_k_prob_mask = get_top_k_prob_mask(prob_mask, 2)
-    expected = torch.tensor([[0.7, -1.], [0.1, -1.]])
+    expected = torch.tensor([[0.7, 0.], [0.1, 0.]])
     print(expected.type())
     print(top_k_prob_mask.type())
     assert torch.equal(top_k_prob_mask, expected), f"{top_k_prob_mask} != {expected}"

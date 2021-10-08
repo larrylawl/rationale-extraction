@@ -58,11 +58,11 @@ class EraserDataset(Dataset):
     def __getitem__(self, idx: int):
         return create_instance(self.anns[idx], self.docs, self.tokenizer, self.embedding_model, self.logger)
 
-def pad_collate(batch, embedding_padding_value=0):
+def pad_collate(batch):
     (t_e, r, l, ann_id) = zip(*batch)
     t_e_lens = [t.size()[0] for t in t_e]
 
-    t_e_pad = pad_sequence(t_e, padding_value = embedding_padding_value)  # (L, N, H_in)
+    t_e_pad = pad_sequence(t_e)  # (L, N, H_in)
     r_pad = pad_sequence(r).to(device)
     # t_e_packed = pack_padded_sequence(t_e_pad, t_e_lens, enforce_sorted=False)
     l = torch.tensor([dataset_mapping[base_dataset_name][x] for x in l], dtype=torch.long).to(device)
@@ -86,7 +86,11 @@ def train(dataloader, enc, gen, optimizer):
     gen.train()
     enc.train()
 
-    for batch, (t_e_pad, t_e_lens, r_pad, l, _) in enumerate(tqdm(dataloader)):        
+    for batch, (t_e_pad, t_e_lens, r_pad, l, _) in enumerate(tqdm(dataloader)):  
+        # TODO: co-training
+        # Assign sub_cotrain_mask = cotrain_mask[mask.size(0):], batch number same, but likely need to slice rows (sequence length)
+        # use same dataloader since share same train method
+
         # forward pass
         mask = gen(t_e_pad, t_e_lens)
         # hard yet differentiable by using the same trick as https://pytorch.org/docs/stable/generated/torch.nn.functional.gumbel_softmax.html#
@@ -130,8 +134,8 @@ def train(dataloader, enc, gen, optimizer):
     # }
     return scalar_metrics, _
 
-def test(dataloader, enc, gen):
-    running_scalar_labels = ["val_f1", "val_tok_precision", "val_tok_recall", "val_tok_f1"]
+def test(dataloader, enc, gen, split="val"):
+    running_scalar_labels = [f"{split}_f1", f"{split}_tok_precision", f"{split}_tok_recall", f"{split}_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     
     gen.eval()
@@ -239,8 +243,7 @@ def main():
     logger.info("Evaluating best model on test set")
     gen.load_state_dict(torch.load(os.path.join(args.out_dir, "best_gen_weights.pth")))
     enc.load_state_dict(torch.load(os.path.join(args.out_dir, "best_enc_weights.pth")))
-    test_scalar_metrics = test(test_dataloader, enc, gen)
-    test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
+    test_scalar_metrics = test(test_dataloader, enc, gen, "test")
     write_json(test_scalar_metrics, os.path.join(args.out_dir, "results.json"))
 
 if __name__ == "__main__":
