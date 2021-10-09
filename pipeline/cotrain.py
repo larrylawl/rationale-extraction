@@ -100,7 +100,7 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
         bs = config["train"]["batch_size"]
         if config["train"]["cotrain_perfect"]: r_mask = torch.zeros(max_tokens, len(dataset))
         for batch, (t_e_pad, t_e_lens, r_pad, _, _, _) in enumerate(tqdm(dataloader)): 
-            mask = gen(t_e_pad, t_e_lens).cpu()  # (L, bs), cpu since not many operations to mask
+            mask = gen(t_e_pad, t_e_lens)  # (L, bs), cpu since not many operations to mask
             prob_mask[:, batch*bs:(batch+1)*bs] = F.pad(mask.T, (0, max_tokens - mask.size(0))).T # (max_tokens, bs), pad to max_tokens
 
             if config["train"]["cotrain_perfect"]: 
