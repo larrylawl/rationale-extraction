@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_lite
+dataset_name=esnli_lightest
 exp_name=toy_exp
 
 src_data_dir=../data/esnli/$dataset_name
 tgt_data_dir=../data/esnli/${dataset_name}_fr
-src_model_dir=../out/$dataset_name/self_sup
-tgt_model_dir=../out/${dataset_name}_fr/self_sup
+src_model_dir=../out/esnli_20k/self_sup/0
+tgt_model_dir=../out/esnli_20k_fr/self_sup/0
 config=../models/config.json
 out_dir=../out/$dataset_name/$exp_name
 repeat=1

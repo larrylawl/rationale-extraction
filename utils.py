@@ -16,6 +16,8 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 from sklearn.metrics import precision_recall_fscore_support
 import random
+from models.encoder import Encoder
+from models.generator import Generator
 
 @dataclass(eq=True, frozen=True)
 class Evidence:
@@ -538,9 +540,6 @@ def load_instances(data_dir, tokenizer, embedding_model, logger, debug=False):
         exit(1)
     return ret
 
-def get_num_classes(dataset_name):
-    return len(dataset_mapping[dataset_name])
-
 def set_seed(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -564,15 +563,9 @@ def get_base_dataset_name(dataset_name):
     else: raise NotImplementedError
 
 dataset_mapping = {
-    "multirc": {
-        "False": 0,
-        "True": 1
-    },
-    "esnli": {
-        "contradiction": 0,
-        "entailment": 1,
-        "neutral": 2
-    }
+    "contradiction": 0,
+    "entailment": 1,
+    "neutral": 2
 }
 
 def tracked_named_parameters(named_parameters):
@@ -630,7 +623,6 @@ def get_top_k_prob_mask(prob_mask, k):
     prob_mask_flat = prob_mask.flatten()
     conf_masks = torch.abs(prob_mask_flat - 0.5)
     v, i = torch.topk(conf_masks, k)
-    res_flat = torch.sparse_coo_tensor()
     res_flat = torch.zeros(prob_mask_flat.size())
     res_flat[i] = prob_mask_flat[i]
     res = res_flat.view(prob_mask.size())
@@ -665,7 +657,14 @@ def add_offsets(wa: Dict[int, List[int]], key_offset, val_offset):
     for k, v in wa.items():
         res[k + key_offset] = [x+val_offset for x in v]
     return res
-    
+
+def instantiate_models(config, device, enc_weights_fp=None, gen_weights_fp=None):
+    enc = Encoder(config["encoder"]).to(device)
+    gen = Generator(config["generator"]).to(device)
+    if enc_weights_fp: enc.load_state_dict(torch.load(enc_weights_fp))
+    if gen_weights_fp: gen.load_state_dict(torch.load(gen_weights_fp))
+    return enc, gen
+
 ### TESTS
 
 def test_get_wordpiece_embeddings():
@@ -808,7 +807,6 @@ def test_get_top_k_prob_mask():
     print(expected.type())
     print(top_k_prob_mask.type())
     assert torch.equal(top_k_prob_mask, expected), f"{top_k_prob_mask} != {expected}"
-    
 
 if __name__ == "__main__":
     print("Running unit tests...")
