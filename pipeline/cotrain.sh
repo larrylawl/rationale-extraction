@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_lightest
+dataset_name=esnli
 exp_name=toy_exp
 
 src_data_dir=../data/esnli/$dataset_name
