@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 from tqdm import tqdm
 from sklearn.metrics import f1_score
-from utils import dataset_mapping, create_instance, score_hard_rationale_predictions, F1Score
+from utils import PRFScore, dataset_mapping, create_instance, score_hard_rationale_predictions
 
 class EraserDataset(Dataset):
     """ ERASER dataset. """
@@ -50,7 +50,7 @@ def tune_hp(config):
 def train(dataloader, enc, gen, optimizer, args, device):
     running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_cont_loss", "trg_sel_loss", "trg_mask_sup_loss", "trg_total_f1", "trg_tok_precision", "trg_tok_recall", "trg_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
-    f1_metric = F1Score('macro')
+    prf_metric = PRFScore('macro')
     # total_params = len(tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters())))
     # mean_grads = torch.zeros(total_params).to(device)
     # var_grads = torch.zeros(total_params).to(device)
@@ -81,10 +81,7 @@ def train(dataloader, enc, gen, optimizer, args, device):
         else: mask_sup_loss = torch.tensor(0)
         obj_loss = nn.CrossEntropyLoss()(logit, l)
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
-        # NOTE: .cpu() is costly. comment out to speed up iteration by 3x
-        # Maybe I compute val loss instead?
-        # f1 = f1_score(l.detach().cpu(), y_pred.cpu(), average="macro")
-        f1 = f1_metric(l.detach(), y_pred)
+        _, _, f1 = prf_metric(l.detach(), y_pred)
         tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
         # Backpropagation
@@ -116,6 +113,7 @@ def train(dataloader, enc, gen, optimizer, args, device):
 def test(dataloader, enc, gen, device, split="val"):
     running_scalar_labels = [f"{split}_f1", f"{split}_tok_precision", f"{split}_tok_recall", f"{split}_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
+    prf_metric = PRFScore('macro')
     
     gen.eval()
     enc.eval()
@@ -129,8 +127,8 @@ def test(dataloader, enc, gen, device, split="val"):
             logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
             probs = nn.Softmax(dim=1)(logit.detach())
             y_pred = torch.argmax(probs, dim=1)
-            f1 = f1_score(l.detach().cpu(), y_pred.cpu(), average="macro")
-            tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach().cpu(), r_pad.detach().cpu(), t_e_lens)
+            _, _, f1 = prf_metric(l.detach(), y_pred)
+            tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
             running_scalar_metrics += torch.tensor([f1, tok_p, tok_r, tok_f1])
 

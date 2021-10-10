@@ -597,9 +597,10 @@ def plot_grad_flow(mean_grads, var_grads, layers, fp):
     plt.savefig(fp, bbox_inches='tight')
 
 def score_hard_rationale_predictions(mask_pad, rationale_pad, token_lengths):
-    """ Follows ERASER paper's implementation. """
+    """ Follows ERASER paper's implementation. Returns macro token f1 score. """
     assert mask_pad.size() == rationale_pad.size()  # (L, N) == (L, N)
     running_scores = torch.zeros(3)
+    prf_metric = PRFScore("binary")
     for i in range(len(token_lengths)):
         mask_instance = mask_pad[:token_lengths[i], i]
         rationale_instance = rationale_pad[:token_lengths[i], i]
@@ -607,8 +608,8 @@ def score_hard_rationale_predictions(mask_pad, rationale_pad, token_lengths):
         # print(f"rat instance: {rationale_instance}")
         assert len(mask_instance) == len(rationale_instance)
 
-        scores = precision_recall_fscore_support(rationale_instance, mask_instance, average='binary', zero_division=0)
-        running_scores += torch.tensor(scores[:-1])
+        scores = prf_metric(rationale_instance, mask_instance)
+        running_scores += torch.tensor(scores)
 
     p, r, f1 = running_scores / len(token_lengths)
     return p, r, f1
@@ -701,14 +702,13 @@ class PRFScore:
         return f1_score
 
     @staticmethod
-    def calc_prf_count_for_label(predictions: torch.Tensor,
-                                labels: torch.Tensor, label_id: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def calc_prf_count_for_label(labels: torch.Tensor, predictions: torch.Tensor, label_id: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Calculate f1 and true count for the label
+        Calculate precision, recall, f1 and true count for the label
 
         Args:
-            predictions: tensor with predictions
             labels: tensor with original labels
+            predictions: tensor with predictions
             label_id: id of current label
 
         Returns:
@@ -735,7 +735,7 @@ class PRFScore:
         f1 = torch.where(torch.isnan(f1), torch.zeros_like(f1).type_as(true_positive), f1)
         return precision, recall, f1, true_count
 
-    def __call__(self, predictions: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __call__(self, labels: torch.Tensor, predictions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Calculate f1 score based on averaging method defined in init.
 
@@ -749,14 +749,14 @@ class PRFScore:
 
         # simpler calculation for micro
         if self.average == 'micro':
-            return self.calc_f1_micro(predictions, labels)
+            return self.calc_f1_micro(labels, predictions)
         if self.average == 'binary':
-            p, r, f1, _ = self.calc_prf_count_for_label(predictions, labels, self.pos_label)
+            p, r, f1, _ = self.calc_prf_count_for_label(labels, predictions, self.pos_label)
             return p, r, f1
 
         scores = torch.zeros(3)
         for label_id in range(1, len(labels.unique()) + 1):
-            p, r, f1, true_count = self.calc_prf_count_for_label(predictions, labels, label_id)
+            p, r, f1, true_count = self.calc_prf_count_for_label(labels, predictions, label_id)
 
             if self.average == 'weighted':
                 scores += torch.tensor([p, r, f1]) * true_count
@@ -923,7 +923,7 @@ def test_prfscore():
         # TODO: binary test
         for av in ['macro', 'weighted']:
             prf_metric = PRFScore(av)
-            my_p, my_r, my_f1 = prf_metric(predictions, labels)
+            my_p, my_r, my_f1 = prf_metric(labels, predictions)
             
             p, r, f1, _ = precision_recall_fscore_support(labels, predictions, average=av)
             assert np.isclose(my_p.item(), p)
@@ -933,7 +933,7 @@ def test_prfscore():
         labels = torch.randint(0, 2, (4096, 100)).flatten()
         predictions = torch.randint(0, 2, (4096, 100)).flatten()
         prf_metric = PRFScore("binary")
-        my_p, my_r, my_f1 = prf_metric(predictions, labels)
+        my_p, my_r, my_f1 = prf_metric(labels, predictions)
         
         p, r, f1, _ = precision_recall_fscore_support(labels, predictions, average="binary")
         assert np.isclose(my_p.item(), p)
@@ -948,7 +948,7 @@ if __name__ == "__main__":
     # test_merge_character_spans()
     # test_merge_wordpiece_embeddings_by_word_ids()
     # test_gen_loss()
-    # test_score_hard_rationale_predictions()
+    test_score_hard_rationale_predictions()
     # test_top_k_idxs_multid()
     test_prfscore()
     # test_get_top_k_prob_mask()
