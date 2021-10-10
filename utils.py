@@ -606,6 +606,7 @@ def score_hard_rationale_predictions(mask_pad, rationale_pad, token_lengths):
         # print(f"mask instance: {mask_instance}")
         # print(f"rat instance: {rationale_instance}")
         assert len(mask_instance) == len(rationale_instance)
+
         scores = precision_recall_fscore_support(rationale_instance, mask_instance, average='binary', zero_division=0)
         running_scores += torch.tensor(scores[:-1])
 
@@ -664,6 +665,110 @@ def instantiate_models(config, device, enc_weights_fp=None, gen_weights_fp=None)
     if enc_weights_fp: enc.load_state_dict(torch.load(enc_weights_fp))
     if gen_weights_fp: gen.load_state_dict(torch.load(gen_weights_fp))
     return enc, gen
+
+class PRFScore:
+    """
+    Class for precision, recall, f1 scores in Pytorch.
+    """
+
+    def __init__(self, average: str = 'weighted', pos_label: int = 1):
+        """
+        Init.
+
+        Args:
+            average: averaging method
+        """
+        self.average = average
+        self.pos_label = pos_label
+        if average not in [None, 'macro', 'weighted', 'binary']:
+            raise ValueError('Wrong value of average parameter')
+
+    @staticmethod
+    def calc_f1_micro(predictions: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate f1 micro.
+
+        Args:
+            predictions: tensor with predictions
+            labels: tensor with original labels
+
+        Returns:
+            f1 score
+        """
+        raise NotImplementedError
+        true_positive = torch.eq(labels, predictions).sum().float()
+        f1_score = torch.div(true_positive, len(labels))
+        return f1_score
+
+    @staticmethod
+    def calc_prf_count_for_label(predictions: torch.Tensor,
+                                labels: torch.Tensor, label_id: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Calculate f1 and true count for the label
+
+        Args:
+            predictions: tensor with predictions
+            labels: tensor with original labels
+            label_id: id of current label
+
+        Returns:
+            f1 score and true count for label
+        """
+        # label count
+        true_count = torch.eq(labels, label_id).sum()
+
+        # true positives: labels equal to prediction and to label_id
+        true_positive = torch.logical_and(torch.eq(labels, predictions),
+                                          torch.eq(labels, label_id)).sum().float()
+        # precision for label
+        precision = torch.div(true_positive, torch.eq(predictions, label_id).sum().float())
+        # replace nan values with 0
+        precision = torch.where(torch.isnan(precision),
+                                torch.zeros_like(precision).type_as(true_positive),
+                                precision)
+
+        # recall for label
+        recall = torch.div(true_positive, true_count)
+        # f1
+        f1 = 2 * precision * recall / (precision + recall)
+        # replace nan values with 0
+        f1 = torch.where(torch.isnan(f1), torch.zeros_like(f1).type_as(true_positive), f1)
+        return precision, recall, f1, true_count
+
+    def __call__(self, predictions: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Calculate f1 score based on averaging method defined in init.
+
+        Args:
+            predictions: tensor with predictions
+            labels: tensor with original labels
+
+        Returns:
+            f1 score
+        """
+
+        # simpler calculation for micro
+        if self.average == 'micro':
+            return self.calc_f1_micro(predictions, labels)
+        if self.average == 'binary':
+            p, r, f1, _ = self.calc_prf_count_for_label(predictions, labels, self.pos_label)
+            return p, r, f1
+
+        scores = torch.zeros(3)
+        for label_id in range(1, len(labels.unique()) + 1):
+            p, r, f1, true_count = self.calc_prf_count_for_label(predictions, labels, label_id)
+
+            if self.average == 'weighted':
+                scores += torch.tensor([p, r, f1]) * true_count
+            elif self.average == 'macro':
+                scores += torch.tensor([p, r, f1])
+
+        if self.average == 'weighted':
+            scores = scores / len(labels)
+        elif self.average == 'macro':
+            scores = scores / len(labels.unique())
+
+        return scores[0], scores[1], scores[2]
 
 ### TESTS
 
@@ -808,6 +913,36 @@ def test_get_top_k_prob_mask():
     print(top_k_prob_mask.type())
     assert torch.equal(top_k_prob_mask, expected), f"{top_k_prob_mask} != {expected}"
 
+def test_prfscore():
+    for _ in range(10):
+        labels = torch.randint(1, 10, (4096, 100)).flatten()
+        predictions = torch.randint(1, 10, (4096, 100)).flatten()
+        # labels1 = labels.numpy()
+        # predictions1 = predictions.numpy()
+
+        # TODO: binary test
+        for av in ['macro', 'weighted']:
+            prf_metric = PRFScore(av)
+            my_p, my_r, my_f1 = prf_metric(predictions, labels)
+            
+            p, r, f1, _ = precision_recall_fscore_support(labels, predictions, average=av)
+            assert np.isclose(my_p.item(), p)
+            assert np.isclose(my_r.item(), r)
+            assert np.isclose(my_f1.item(), f1)
+        
+        labels = torch.randint(0, 2, (4096, 100)).flatten()
+        predictions = torch.randint(0, 2, (4096, 100)).flatten()
+        prf_metric = PRFScore("binary")
+        my_p, my_r, my_f1 = prf_metric(predictions, labels)
+        
+        p, r, f1, _ = precision_recall_fscore_support(labels, predictions, average="binary")
+        assert np.isclose(my_p.item(), p)
+        assert np.isclose(my_r.item(), r)
+        assert np.isclose(my_f1.item(), f1)
+
+
+
+
 if __name__ == "__main__":
     print("Running unit tests...")
     # test_merge_character_spans()
@@ -815,7 +950,8 @@ if __name__ == "__main__":
     # test_gen_loss()
     # test_score_hard_rationale_predictions()
     # test_top_k_idxs_multid()
-    test_get_top_k_prob_mask()
+    test_prfscore()
+    # test_get_top_k_prob_mask()
     # test_get_wordpiece_embeddings()
     # test_get_token_embeddings()
     print("Unit tests passed!")

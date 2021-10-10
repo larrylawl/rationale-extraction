@@ -210,7 +210,6 @@ def main():
         logger.info(f"Epoch {t+1}\n-------------------------------")
         # augment train datasets with cotrain masks
         src_train_dataset, tgt_train_dataset = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, k)
-        exit(1)
         src_train_dataloader = DataLoader(src_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
         tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
