@@ -4,7 +4,6 @@ import unicodedata
 import nltk
 
 from functools import reduce
-from collections import deque
 import numpy as np
 import torch
 from torch import Tensor
@@ -672,7 +671,7 @@ class PRFScore:
     Class for precision, recall, f1 scores in Pytorch.
     """
 
-    def __init__(self, average: str = 'weighted', pos_label: int = 1):
+    def __init__(self, average: str = 'macro', pos_label: int = 1):
         """
         Init.
 
@@ -746,6 +745,8 @@ class PRFScore:
         Returns:
             f1 score
         """
+        assert labels.dim() == 1, "Flatten labels first!"
+        assert predictions.dim() == 1, "Flatten predictions first!"
 
         # simpler calculation for micro
         if self.average == 'micro':
@@ -755,7 +756,7 @@ class PRFScore:
             return p, r, f1
 
         scores = torch.zeros(3)
-        for label_id in range(1, len(labels.unique()) + 1):
+        for label_id in range(0, len(labels.unique())):
             p, r, f1, true_count = self.calc_prf_count_for_label(labels, predictions, label_id)
 
             if self.average == 'weighted':
@@ -914,21 +915,21 @@ def test_get_top_k_prob_mask():
     assert torch.equal(top_k_prob_mask, expected), f"{top_k_prob_mask} != {expected}"
 
 def test_prfscore():
-    for _ in range(10):
-        labels = torch.randint(1, 10, (4096, 100)).flatten()
-        predictions = torch.randint(1, 10, (4096, 100)).flatten()
-        # labels1 = labels.numpy()
-        # predictions1 = predictions.numpy()
+    from sklearn.metrics import f1_score
+    for _ in range(1):
+        labels = torch.randint(0, 10, (4096, 100)).flatten()
+        predictions = torch.randint(0, 10, (4096, 100)).flatten()
 
         # TODO: binary test
         for av in ['macro', 'weighted']:
-            prf_metric = PRFScore(av)
-            my_p, my_r, my_f1 = prf_metric(labels, predictions)
+            my_p, my_r, my_f1 = PRFScore(av)(labels, predictions)
             
             p, r, f1, _ = precision_recall_fscore_support(labels, predictions, average=av)
+            e_f1 = f1_score(labels, predictions, average=av)
             assert np.isclose(my_p.item(), p)
             assert np.isclose(my_r.item(), r)
             assert np.isclose(my_f1.item(), f1)
+            assert np.isclose(my_f1.item(), e_f1)
         
         labels = torch.randint(0, 2, (4096, 100)).flatten()
         predictions = torch.randint(0, 2, (4096, 100)).flatten()

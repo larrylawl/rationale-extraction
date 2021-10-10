@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli
+dataset_name=esnli_lightest
 exp_name=toy_exp
 
 src_data_dir=../data/esnli/$dataset_name
@@ -18,6 +18,7 @@ for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
         --src_model_dir $src_model_dir \
         --tgt_model_dir $tgt_model_dir \
         --config $config \
+        --cotrain \
         --out_dir $out_dir/$i \
         --seed $(( 100 + $i )) \
         # --tune_hp

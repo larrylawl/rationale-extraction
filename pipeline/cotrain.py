@@ -40,13 +40,10 @@ def parse_args():
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
+    parser.add_argument("--cotrain", action="store_true")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
-
-def custom_BCE():
-    # NOTE: current top_k_prob_mask has value 0 if unlabelled.
-    pass
 
 def add_wa_to_anns(src_train_anns, tgt_train_anns, src_was, tgt_was, src_documents, tgt_documents):
     for i in range(len(src_train_anns)):
@@ -132,9 +129,8 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     ## update both languages' top_k_prob_mask by looping.
     ### remove conflicting tokens
     ## create new prob_mask of all zeros. Use top_k_prob_mask cross product indexing 
-
-    assert len(src_top_k_prob_mask) == len(src_train_dataset), "Row i of prob mask corresponds to self labels for ith annotation."
-    assert len(tgt_top_k_prob_mask) == len(tgt_train_dataset), "Row i of prob mask corresponds to self labels for ith annotation."
+    assert src_top_k_prob_mask.size(1) == len(src_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
+    assert tgt_top_k_prob_mask.size(1) == len(tgt_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
     assert src_top_k_prob_mask.size() == tgt_top_k_prob_mask.size()
     src_train_dataset.cotrain_mask = src_top_k_prob_mask
     tgt_train_dataset.cotrain_mask = tgt_top_k_prob_mask

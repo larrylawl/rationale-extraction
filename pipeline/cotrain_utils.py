@@ -1,4 +1,5 @@
 import sys; sys.path.insert(0, "..")
+import numpy as np
 import random
 import torch
 import torch.nn as nn
@@ -50,7 +51,6 @@ def tune_hp(config):
 def train(dataloader, enc, gen, optimizer, args, device):
     running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_cont_loss", "trg_sel_loss", "trg_mask_sup_loss", "trg_total_f1", "trg_tok_precision", "trg_tok_recall", "trg_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
-    prf_metric = PRFScore('macro')
     # total_params = len(tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters())))
     # mean_grads = torch.zeros(total_params).to(device)
     # var_grads = torch.zeros(total_params).to(device)
@@ -78,10 +78,15 @@ def train(dataloader, enc, gen, optimizer, args, device):
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
         if "sup" in args and args.sup: mask_sup_loss = nn.BCELoss()(mask, r_pad)
+        elif "cotrain" in args and args.cotrain: 
+            mask_sup_loss = nn.BCELoss()(mask[c_mask != 0], c_mask[c_mask != 0])  # mask: (L, bs), c_mask: (max_tokens, bs)
         else: mask_sup_loss = torch.tensor(0)
         obj_loss = nn.CrossEntropyLoss()(logit, l)
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
-        _, _, f1 = prf_metric(l.detach(), y_pred)
+
+        _, _, f1 = PRFScore(average="macro")(l.detach(), y_pred)
+        e_f1 = f1_score(l.detach().cpu().long(), y_pred.detach().cpu().long(), average='macro')
+        assert np.isclose(f1, e_f1), f"{f1} != {e_f1}"
         tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
         # Backpropagation
@@ -113,7 +118,6 @@ def train(dataloader, enc, gen, optimizer, args, device):
 def test(dataloader, enc, gen, device, split="val"):
     running_scalar_labels = [f"{split}_f1", f"{split}_tok_precision", f"{split}_tok_recall", f"{split}_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
-    prf_metric = PRFScore('macro')
     
     gen.eval()
     enc.eval()
@@ -127,7 +131,9 @@ def test(dataloader, enc, gen, device, split="val"):
             logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
             probs = nn.Softmax(dim=1)(logit.detach())
             y_pred = torch.argmax(probs, dim=1)
-            _, _, f1 = prf_metric(l.detach(), y_pred)
+            _, _, f1 = PRFScore(average='macro')(l.detach(), y_pred)
+            e_f1 = f1_score(l.detach().cpu().long(), y_pred.detach().cpu().long(), average='macro')
+            assert np.isclose(f1, e_f1), f"{f1} != {e_f1}"
             tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
             running_scalar_metrics += torch.tensor([f1, tok_p, tok_r, tok_f1])
@@ -136,3 +142,57 @@ def test(dataloader, enc, gen, device, split="val"):
         scalar_metrics = {}
         for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i].item()
         return scalar_metrics
+
+class MaskBCELoss:
+    """ BCE loss that skips computation for value 0. 
+    Let x = [1, 1, 0]
+    f(x) = x_1 + x_2 = 3
+    df(x) / dx = [df(x) / dx_1, ..., df(x) / dx_3] = [1, 1, 0]
+    Gradient for skipped value (i.e. x_3) will then be 0.
+    """
+    
+    def __call__(self, pred: torch.Tensor, target: torch.Tensor) -> float:
+        # only compute BCE for 
+        # bce_loss = -1 * (target * torch.log(pred) + (1 - target) * torch.log(1 - pred))
+
+        # compute loss for only specific elements. 
+        # if i compute for everything, it'll detect operation all.
+
+        loss = torch.where(pred == 0, 
+                    pred,
+                    torch.tensor(1.0))  # BCE
+
+        avg_loss = sum(loss) / torch.count_nonzero(pred)
+        return avg_loss
+
+# TESTS
+def test_custom_bce_loss():
+    mask_bce_loss = MaskBCELoss()
+    loss = nn.BCELoss()
+    m = nn.Sigmoid()
+
+    # test for normal bce
+    input = torch.randn(3, requires_grad=True)
+    target = torch.empty(3).random_(2)
+    output = mask_bce_loss(m(input), target)
+    output.backward()
+    print(input.grad)
+    expected_output = loss(m(input), target)
+    # assert torch.equal(output, expected_output), f"{output} != {expected_output}"
+
+    # test for skip
+    # test for normal bce
+    input = torch.tensor([0.2, 0, 0.8], requires_grad=True)
+    target = torch.tensor([0, 1, 1])
+    output = mask_bce_loss(input, target)
+    expected_output = -torch.log(torch.tensor(0.8))
+    output.backward()
+    print(input.grad)
+    # expected_output = loss(m(input), target)
+    # assert torch.equal(output, expected_output), f"{output} != {expected_output}"
+
+
+if __name__ == "__main__":
+    print("Running unit tests...")
+    test_custom_bce_loss()
+    print("Unit tests passed!")
