@@ -67,7 +67,6 @@ class Annotation:
 
     def all_evidences(self) -> Tuple[Evidence]:
         return tuple(list(chain.from_iterable(self.evidences)))
-    
 
 def annotations_to_jsonl(annotations, output_file, mode='w'):
     with open(output_file, mode, encoding='utf-8') as of:
@@ -560,12 +559,6 @@ def get_base_dataset_name(dataset_name):
     if "esnli" in dataset_name: return "esnli"
     elif "multirc" in dataset_name: return "multirc"
     else: raise NotImplementedError
-
-dataset_mapping = {
-    "contradiction": 0,
-    "entailment": 1,
-    "neutral": 2
-}
 
 def tracked_named_parameters(named_parameters):
     res = [(n, p) for n, p in named_parameters if(p.requires_grad) and ("bias" not in n)]

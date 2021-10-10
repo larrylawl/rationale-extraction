@@ -16,7 +16,7 @@ from tqdm import tqdm
 import random
 
 from pipeline.cotrain_utils import *
-from utils import instantiate_models, load_datasets, load_documents, load_instances, get_optimizer, dataset_mapping, get_base_dataset_name, read_json, write_json, plot_grad_flow, tracked_named_parameters, score_hard_rationale_predictions
+from utils import instantiate_models, load_datasets, load_documents, load_instances, get_optimizer, read_json, write_json, plot_grad_flow, tracked_named_parameters, score_hard_rationale_predictions
 
 logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadName)s %(message)s')
 # let's make this more or less deterministic (not resistent to restarts)

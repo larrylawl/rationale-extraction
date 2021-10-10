@@ -3,11 +3,13 @@ import numpy as np
 import random
 import torch
 import torch.nn as nn
+from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 from tqdm import tqdm
-from sklearn.metrics import f1_score
-from utils import PRFScore, dataset_mapping, create_instance, score_hard_rationale_predictions
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
+from utils import PRFScore, create_instance, score_hard_rationale_predictions, Annotation, Evidence, generate_document_evidence_map
 
 class EraserDataset(Dataset):
     """ ERASER dataset. """
@@ -63,10 +65,6 @@ def train(dataloader, enc, gen, optimizer, args, device):
         # to device
         r_pad = r_pad.to(device)
         l = l.to(device)
-
-        # TODO: co-training
-        # Assign sub_cotrain_mask = cotrain_mask[mask.size(0):], batch number same, but likely need to slice rows (sequence length)
-        # use same dataloader since share same train method
 
         # forward pass
         mask = gen(t_e_pad, t_e_lens)
@@ -141,6 +139,50 @@ def test(dataloader, enc, gen, device, split="val"):
         scalar_metrics = {}
         for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i].item()
         return scalar_metrics
+
+@dataclass(eq=True)
+class AnnotationFeature:
+    annotation_id: str
+    text: str 
+    rationale: Tensor
+    label: Tensor
+    alignment: Dict[int, List[int]] = None
+
+def create_features(anns: Annotation, docs: Dict[str, str], device) -> List[AnnotationFeature]:
+    features = []
+    for ann in anns:
+        annotation_id: str = ann.annotation_id
+        evidences: List[List[Evidence]] = ann.evidences
+        label: str = str(ann.classification)
+        docids: List[str] = [f"{annotation_id}_hypothesis", f"{annotation_id}_premise"] # only for esnli
+
+        document_evidence_map: Dict[str, List[Tuple[int, int]]] = generate_document_evidence_map(evidences)
+        assert set(document_evidence_map.keys()).issubset(set(docids)), "Evidence should come from docids!"
+
+        text = []
+        rationale = []
+        for docid in docids:
+            t = docs[docid]
+            text.append(t)
+            
+            # get rationale
+            r = [0.0] * len(t.split())
+            if docid in document_evidence_map:
+                for s, e in document_evidence_map[docid]: 
+                    r[s:e] = [1.0] * (e - s)
+
+            rationale.extend(r)
+            rationale = torch.tensor(rationale).to(device)
+        mapped_label: Tensor = torch.tensor(dataset_mapping[label]).to(device)
+        ann_feature = AnnotationFeature(annotation_id, " ".join(text), rationale, mapped_label)
+        features.append(ann_feature)
+    return features
+
+dataset_mapping = {
+    "contradiction": 0,
+    "entailment": 1,
+    "neutral": 2
+}
 
 class MaskBCELoss:
     """ BCE loss that skips computation for value 0. 

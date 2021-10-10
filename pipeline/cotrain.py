@@ -5,6 +5,7 @@ import math
 import datetime
 import logging
 import shutil
+from multiprocessing import Pool
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -108,21 +109,33 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
         prob_mask[algn_mask == 0] = 0.5   # ensure that tokens with no alignment (including padding) are not selected
         top_k_prob_mask = get_top_k_prob_mask(prob_mask, k)  # (max_tokens, trg_size)
 
-        # TODO: diagnostic of number of correct labels #
-
         # perfect labelling instead
         if config["train"]["cotrain_perfect"]: 
             r_mask[top_k_prob_mask == -1] = -1 
             assert torch.equal((r_mask + 1).nonzero(), (top_k_prob_mask + 1).nonzero()), f"r_mask should take index from top_k_prob_mask"
             top_k_prob_mask = r_mask
-
-    return top_k_prob_mask
         
+        # micro token f1 of chosen tokens
+        p, r, f1 = PRFScore(average="binary")(r_mask[top_k_prob_mask != -1], top_k_prob_mask[top_k_prob_mask != -1])
+        if config["train"]["cotrain_perfect"]: assert p == r == f1 == 1
+        scalar_metrics = {  
+            "top_k_p": p,
+            "top_k_r": r,
+            "top_k_f1": f1
+        }
 
+    return top_k_prob_mask, scalar_metrics
+        
 def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, k) -> DataLoader:
     """ Augments Eraserdataset with self-labels. """
-    src_top_k_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, k)
-    tgt_top_k_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, k)
+    # with Pool(2) as p:
+    #     op = p.starmap(compute_top_k_prob_mask, [(src_gen, src_train_dataset, src_algn_mask, k), 
+    #                                              (tgt_gen, tgt_train_dataset, tgt_algn_mask, k)])
+    src_top_k_prob_mask, src_scalar_metrics = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, k)
+    tgt_top_k_prob_mask, tgt_scalar_metrics = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, k)
+    for k in src_scalar_metrics.keys(): src_scalar_metrics[f"src_{k}"] = src_scalar_metrics.pop(k)
+    for k in tgt_scalar_metrics.keys(): tgt_scalar_metrics[f"tgt_{k}"] = tgt_scalar_metrics.pop(k)
+    overall_scalar_metrics = {**src_scalar_metrics, **tgt_scalar_metrics}
 
     # TODO: co-training - cross label #
     ## top_k_prob_mask is a set of indexes (i, j): use j to access jth annotation, and i to access ith alignment. 
@@ -135,7 +148,7 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     assert src_top_k_prob_mask.size() == tgt_top_k_prob_mask.size()
     src_train_dataset.cotrain_mask = src_top_k_prob_mask
     tgt_train_dataset.cotrain_mask = tgt_top_k_prob_mask
-    return src_train_dataset, tgt_train_dataset
+    return src_train_dataset, tgt_train_dataset, overall_scalar_metrics
 
 def main():
     start_time = time.time()
@@ -206,7 +219,7 @@ def main():
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
         # augment train datasets with cotrain masks
-        src_train_dataset, tgt_train_dataset = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, k)
+        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, k)
         src_train_dataloader = DataLoader(src_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
         tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
@@ -224,6 +237,8 @@ def main():
         tgt_scheduler.step(tgt_val_target_metric)
 
         # logging metrics
+        for tag, val in cotrain_scalar_metrics.items():
+            writer.add_scalar(tag, val, t)
         for tag, val in src_overall_scalar_metrics.items():
             writer.add_scalar(f"src_{tag}", val, t)
         writer.add_scalar('learning_rate', src_optimizer.param_groups[0]['lr'], t)

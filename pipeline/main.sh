@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_lite
-exp_name=self_sup_fix_metrics_3
-data_dir=../data/esnli/$dataset_name
+dataset_name=esnli
+exp_name=self_sup
+data_dir=/temp/larry/data/esnli/$dataset_name
 config=../models/config.json
 out_dir=../out/$dataset_name/$exp_name
 repeat=1
