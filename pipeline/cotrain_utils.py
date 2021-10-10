@@ -38,6 +38,7 @@ def pad_collate(batch):
     r_pad = pad_sequence(r)
     # t_e_packed = pack_padded_sequence(t_e_pad, t_e_lens, enforce_sorted=False)
     l = torch.tensor([dataset_mapping[x] for x in l], dtype=torch.long)
+    if c_mask[0] != None: c_mask = torch.stack(c_mask, dim = 1)
 
     return t_e_pad, t_e_lens, r_pad, l, ann_id, c_mask
 
@@ -78,15 +79,15 @@ def train(dataloader, enc, gen, optimizer, args, device):
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
         if "sup" in args and args.sup: mask_sup_loss = nn.BCELoss()(mask, r_pad)
-        elif "cotrain" in args and args.cotrain: 
-            mask_sup_loss = nn.BCELoss()(mask[c_mask != 0], c_mask[c_mask != 0])  # mask: (L, bs), c_mask: (max_tokens, bs)
+        elif "cotrain" in args and args.cotrain:
+            # only apply BCE on nonzero values of cotrain mask
+            # seems like mask is all 0s
+            mask_sup_loss = nn.BCELoss()(mask[c_mask.nonzero(as_tuple=True)], c_mask[c_mask != 0].to(device))  # mask: (L, bs), c_mask: (max_tokens, bs)
         else: mask_sup_loss = torch.tensor(0)
         obj_loss = nn.CrossEntropyLoss()(logit, l)
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
 
         _, _, f1 = PRFScore(average="macro")(l.detach(), y_pred)
-        e_f1 = f1_score(l.detach().cpu().long(), y_pred.detach().cpu().long(), average='macro')
-        assert np.isclose(f1, e_f1), f"{f1} != {e_f1}"
         tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
         # Backpropagation
@@ -132,8 +133,6 @@ def test(dataloader, enc, gen, device, split="val"):
             probs = nn.Softmax(dim=1)(logit.detach())
             y_pred = torch.argmax(probs, dim=1)
             _, _, f1 = PRFScore(average='macro')(l.detach(), y_pred)
-            e_f1 = f1_score(l.detach().cpu().long(), y_pred.detach().cpu().long(), average='macro')
-            assert np.isclose(f1, e_f1), f"{f1} != {e_f1}"
             tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
             running_scalar_metrics += torch.tensor([f1, tok_p, tok_r, tok_f1])
