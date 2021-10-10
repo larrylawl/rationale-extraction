@@ -56,7 +56,6 @@ def main():
     write_json(config, os.path.join(args.out_dir, "config.json"))
     config["encoder"]["num_classes"] = len(dataset_mapping)
 
-    
     tokenizer = AutoTokenizer.from_pretrained(config["embedding_model_name"])
     embedding_model = AutoModel.from_pretrained(config["embedding_model_name"], output_hidden_states=True)
     device = torch.device("cpu") if not torch.cuda.is_available() else torch.device("cuda")
@@ -68,12 +67,13 @@ def main():
 
     # setting up data
     documents: Dict[str, str] = load_documents(args.data_dir, docids=None)
-    train_anns, val_anns, test_anns = load_datasets(args.data_dir)
+    # train_anns, val_anns, test_anns = load_datasets(args.data_dir)
+    train_feat, val_feat, test_feat = create_datasets_features(load_datasets(args.data_dir), documents, device)
 
     # create datset
-    train_dataset = EraserDataset(train_anns, documents, tokenizer, embedding_model, logger)
-    val_dataset = EraserDataset(val_anns, documents, tokenizer, embedding_model, logger)
-    test_dataset = EraserDataset(test_anns, documents, tokenizer, embedding_model, logger)
+    train_dataset = EraserDataset(train_feat, tokenizer, embedding_model, logger)
+    val_dataset = EraserDataset(val_feat, tokenizer, embedding_model, logger)
+    test_dataset = EraserDataset(test_feat, tokenizer, embedding_model, logger)
 
     train_dataloader = DataLoader(train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     val_dataloader = DataLoader(val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)

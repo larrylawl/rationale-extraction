@@ -3,20 +3,20 @@ import numpy as np
 import random
 import torch
 import torch.nn as nn
+from operator import attrgetter
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 from tqdm import tqdm
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
-from utils import PRFScore, create_instance, score_hard_rationale_predictions, Annotation, Evidence, generate_document_evidence_map
+from utils import PRFScore, create_instance, get_token_embeddings, score_hard_rationale_predictions, Annotation, Evidence, generate_document_evidence_map
 
 class EraserDataset(Dataset):
     """ ERASER dataset. """
 
-    def __init__(self, anns, docs, tokenizer, embedding_model, logger, cotrain_mask=None):
-        self.anns = anns
-        self.docs = docs
+    def __init__(self, anns, tokenizer, embedding_model, logger, cotrain_mask=None):
+        self.anns: AnnotationFeature = anns
         self.tokenizer = tokenizer
         self.embedding_model = embedding_model
         self.logger = logger
@@ -26,9 +26,20 @@ class EraserDataset(Dataset):
         return len(self.anns)
 
     def __getitem__(self, idx: int):
-        t_e, r, l, ann_id = create_instance(self.anns[idx], self.docs, self.tokenizer, self.embedding_model, self.logger)
+        ann_id, t, r, l, algn = attrgetter("annotation_id", "text", "rationale", "label", "alignment")(self.anns[idx])
+        t_e = get_token_embeddings(t, self.tokenizer, self.embedding_model)
+        assert len(t_e) == len(r)
+        # t_e, r, l, ann_id = create_instance(self.anns[idx], self.docs, self.tokenizer, self.embedding_model, self.logger)
         c_mask = self.cotrain_mask[:, idx] if not self.cotrain_mask is None else None
         return t_e, r, l, ann_id, c_mask
+
+@dataclass(eq=True)
+class AnnotationFeature:
+    annotation_id: str
+    text: str 
+    rationale: Tensor
+    label: Tensor
+    alignment: Dict[int, List[int]] = None
 
 def pad_collate(batch):
     # print(len(batch))
@@ -36,10 +47,11 @@ def pad_collate(batch):
     (t_e, r, l, ann_id, c_mask) = zip(*batch)
     t_e_lens = [t.size()[0] for t in t_e]
 
-    t_e_pad = pad_sequence(t_e)  # (L, N, H_in)
+    t_e_pad = pad_sequence(t_e)  # (L, bs, H_in)
     r_pad = pad_sequence(r)
     # t_e_packed = pack_padded_sequence(t_e_pad, t_e_lens, enforce_sorted=False)
-    l = torch.tensor([dataset_mapping[x] for x in l], dtype=torch.long)
+    # l = torch.tensor([dataset_mapping[x] for x in l], dtype=torch.long)
+    l = torch.stack(l, dim = 0)  # (bs)
     if c_mask[0] != None: c_mask = torch.stack(c_mask, dim = 1)
 
     return t_e_pad, t_e_lens, r_pad, l, ann_id, c_mask
@@ -63,8 +75,8 @@ def train(dataloader, enc, gen, optimizer, args, device):
 
     for batch, (t_e_pad, t_e_lens, r_pad, l, _, c_mask) in enumerate(tqdm(dataloader)):  
         # to device
-        r_pad = r_pad.to(device)
-        l = l.to(device)
+        # r_pad = r_pad.to(device)
+        # l = l.to(device)
 
         # forward pass
         mask = gen(t_e_pad, t_e_lens)
@@ -140,13 +152,12 @@ def test(dataloader, enc, gen, device, split="val"):
         for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i].item()
         return scalar_metrics
 
-@dataclass(eq=True)
-class AnnotationFeature:
-    annotation_id: str
-    text: str 
-    rationale: Tensor
-    label: Tensor
-    alignment: Dict[int, List[int]] = None
+def create_datasets_features(dataset: List[Annotation], docs: Dict[str, str], device) -> List[List[AnnotationFeature]]:
+    res = []
+    for ds in dataset:
+        features = create_features(ds, docs, device)
+        res.append(features)
+    return res
 
 def create_features(anns: Annotation, docs: Dict[str, str], device) -> List[AnnotationFeature]:
     features = []
@@ -172,7 +183,7 @@ def create_features(anns: Annotation, docs: Dict[str, str], device) -> List[Anno
                     r[s:e] = [1.0] * (e - s)
 
             rationale.extend(r)
-            rationale = torch.tensor(rationale).to(device)
+        rationale = torch.tensor(rationale).to(device)
         mapped_label: Tensor = torch.tensor(dataset_mapping[label]).to(device)
         ann_feature = AnnotationFeature(annotation_id, " ".join(text), rationale, mapped_label)
         features.append(ann_feature)

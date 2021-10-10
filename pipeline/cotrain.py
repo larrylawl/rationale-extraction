@@ -183,22 +183,22 @@ def main():
 
     src_documents: Dict[str, str] = load_documents(args.src_data_dir, docids=None)
     tgt_documents: Dict[str, str] = load_documents(args.tgt_data_dir, docids=None)
-    src_train_anns, src_val_anns, src_test_anns = load_datasets(args.src_data_dir)
-    tgt_train_anns, tgt_val_anns, tgt_test_anns = load_datasets(args.tgt_data_dir)
-    src_train_anns, tgt_train_anns = add_wa_to_anns(src_train_anns, tgt_train_anns, src_was, tgt_was, src_documents, tgt_documents)
-    src_algn_mask = get_algn_mask(src_train_anns)
-    tgt_algn_mask = get_algn_mask(tgt_train_anns)
+    src_train_feat, src_val_feat, src_test_feat = create_datasets_features(load_datasets(args.data_dir), src_documents, device)
+    tgt_train_feat, tgt_val_feat, tgt_test_feat = create_datasets_features(load_datasets(args.data_dir), tgt_documents, device)
+    src_train_feat, tgt_train_feat = add_wa_to_anns(src_train_feat, tgt_train_feat, src_was, tgt_was, src_documents, tgt_documents)
+    src_algn_mask = get_algn_mask(src_train_feat)
+    tgt_algn_mask = get_algn_mask(tgt_train_feat)
 
     # create train dataloader later
-    src_train_dataset = EraserDataset(src_train_anns, src_documents, tokenizer, embedding_model, logger)
-    src_val_dataset = EraserDataset(src_val_anns, src_documents, tokenizer, embedding_model, logger)
-    src_test_dataset = EraserDataset(src_test_anns, src_documents, tokenizer, embedding_model, logger)
+    src_train_dataset = EraserDataset(src_train_feat, src_documents, tokenizer, embedding_model, logger)
+    src_val_dataset = EraserDataset(src_val_feat, src_documents, tokenizer, embedding_model, logger)
+    src_test_dataset = EraserDataset(src_test_feat, src_documents, tokenizer, embedding_model, logger)
     src_val_dataloader = DataLoader(src_val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     src_test_dataloader = DataLoader(src_test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
-    tgt_train_dataset = EraserDataset(tgt_train_anns, tgt_documents, tokenizer, embedding_model, logger)
-    tgt_val_dataset = EraserDataset(tgt_val_anns, tgt_documents, tokenizer, embedding_model, logger)
-    tgt_test_dataset = EraserDataset(tgt_test_anns, tgt_documents, tokenizer, embedding_model, logger)
+    tgt_train_dataset = EraserDataset(tgt_train_feat, tgt_documents, tokenizer, embedding_model, logger)
+    tgt_val_dataset = EraserDataset(tgt_val_feat, tgt_documents, tokenizer, embedding_model, logger)
+    tgt_test_dataset = EraserDataset(tgt_test_feat, tgt_documents, tokenizer, embedding_model, logger)
     tgt_val_dataloader = DataLoader(tgt_val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     tgt_test_dataloader = DataLoader(tgt_test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     

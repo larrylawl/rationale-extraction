@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli
-exp_name=self_sup
+dataset_name=esnli_lite
+exp_name=self_sup_cache_features
 data_dir=/temp/larry/data/esnli/$dataset_name
 config=../models/config.json
 out_dir=../out/$dataset_name/$exp_name
