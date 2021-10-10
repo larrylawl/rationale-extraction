@@ -92,6 +92,7 @@ def train(dataloader, enc, gen, optimizer, args, device):
         elif "cotrain" in args and args.cotrain:
             # only apply BCE on nonzero values of cotrain mask
             # c_mask: -1 == not labelled, 0 == not rationale, 1 == rationale
+            # NOTE: wrong as c_mask is prob not 0 or 1. should weight it instead
             mask_sup_loss = nn.BCELoss()(mask[(c_mask + 1).nonzero(as_tuple=True)], c_mask[c_mask != -1].to(device))  # mask: (L, bs), c_mask: (max_tokens, bs)
         else: mask_sup_loss = torch.tensor(0)
         obj_loss = nn.CrossEntropyLoss()(logit, l)

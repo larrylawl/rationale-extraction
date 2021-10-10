@@ -147,7 +147,7 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
             tgt_prob = tgt_top_k_prob_mask[v, ann_idx]
             if (tgt_prob == -1) or (src_prob > 0.5 == tgt_prob > 0.5):  # ensure most confident label does not conflict
                 tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
-            if src_prob > 0.5 == tgt_prob > 0.5: conflicting_labels += 1
+            if src_prob > 0.5 != tgt_prob > 0.5: conflicting_labels += 1
             
     
     for tkn_idx, ann_idx in tgt_idxs:
@@ -157,7 +157,7 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
             src_prob = src_top_k_prob_mask[v, ann_idx]
             if (src_prob == -1) or (tgt_prob > 0.5 == src_prob > 0.5):  # ensure most confident label does not conflict
                 src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
-            if src_prob > 0.5 == tgt_prob > 0.5: conflicting_labels += 1
+            if src_prob > 0.5 != tgt_prob > 0.5: conflicting_labels += 1
     
     src_top_k_pred = (src_top_k_prob_mask[src_top_k_prob_mask != -1] > 0.5).float()
     src_p, src_r, src_f1 = PRFScore(average="binary")(src_r_mask[src_top_k_prob_mask != -1], src_top_k_pred)
