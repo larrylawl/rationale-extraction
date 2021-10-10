@@ -20,10 +20,9 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 
 from pipeline.cotrain_utils import *
-from utils import get_top_k_prob_mask, instantiate_models, load_datasets, create_instance, load_documents, load_id_jsonl_as_dict, get_optimizer, dataset_mapping, parse_alignment, read_json, top_k_idxs_multid, write_json, add_offsets
+from utils import get_top_k_prob_mask, instantiate_models, load_datasets, create_instance, load_documents, load_id_jsonl_as_dict, get_optimizer, parse_alignment, read_json, top_k_idxs_multid, write_json, add_offsets
 
 logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadName)s %(message)s')
-# let's make this more or less deterministic (not resistent to restarts)
 
 logger = logging.getLogger(__name__)
 args = None
@@ -95,15 +94,13 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
     with torch.no_grad():
         # forward pass to obtain prob of all tokens
         prob_mask = torch.zeros(max_tokens, len(dataset))
+        r_mask = torch.zeros(max_tokens, len(dataset))
         bs = config["train"]["batch_size"]
-        if config["train"]["cotrain_perfect"]: r_mask = torch.zeros(max_tokens, len(dataset))
         for batch, (t_e_pad, t_e_lens, r_pad, _, _, _) in enumerate(tqdm(dataloader)): 
             mask = gen(t_e_pad, t_e_lens)  # (L, bs)
+            assert mask.size() == r_pad.size()
             prob_mask[:, batch*bs:(batch+1)*bs] = F.pad(mask.T, (0, max_tokens - mask.size(0))).T # (max_tokens, bs), pad to max_tokens
-
-            if config["train"]["cotrain_perfect"]: 
-                assert mask.size() == r_pad.size()
-                r_mask[:, (batch*bs):((batch+1)*bs)] = F.pad(r_pad.T, (0, max_tokens - r_pad.size(0))).T # (max_tokens, bs)
+            r_mask[:, batch*bs:(batch+1)*bs] = F.pad(r_pad.T, (0, max_tokens - r_pad.size(0))).T # (max_tokens, bs)
 
         # label top 1% of most confident tokens
         prob_mask[algn_mask == 0] = 0.5   # ensure that tokens with no alignment (including padding) are not selected
@@ -111,43 +108,76 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
 
         # perfect labelling instead
         if config["train"]["cotrain_perfect"]: 
-            r_mask[top_k_prob_mask == -1] = -1 
-            assert torch.equal((r_mask + 1).nonzero(), (top_k_prob_mask + 1).nonzero()), f"r_mask should take index from top_k_prob_mask"
-            top_k_prob_mask = r_mask
+            top_k_r_mask = r_mask.clone()
+            top_k_r_mask[top_k_prob_mask == -1] = -1
+            assert torch.equal((top_k_r_mask + 1).nonzero(), (top_k_prob_mask + 1).nonzero()), f"r_mask should take index from top_k_prob_mask"
+            top_k_prob_mask = top_k_r_mask
         
         # micro token f1 of chosen tokens
-        p, r, f1 = PRFScore(average="binary")(r_mask[top_k_prob_mask != -1], top_k_prob_mask[top_k_prob_mask != -1])
-        if config["train"]["cotrain_perfect"]: assert p == r == f1 == 1
+        top_k_pred = (top_k_prob_mask[top_k_prob_mask != -1] > 0.5).float()
+        p, r, f1 = PRFScore(average="binary")(r_mask[top_k_prob_mask != -1], top_k_pred)
+        # if config["train"]["cotrain_perfect"]: assert p == r == f1 == 1, f"{r_mask[top_k_prob_mask != -1]}, {top_k_prob_mask[top_k_prob_mask != -1]}"
         scalar_metrics = {  
             "top_k_p": p,
             "top_k_r": r,
             "top_k_f1": f1
         }
 
-    return top_k_prob_mask, scalar_metrics
+    return top_k_prob_mask, scalar_metrics, r_mask
         
 def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, k) -> DataLoader:
     """ Augments Eraserdataset with self-labels. """
     # with Pool(2) as p:
     #     op = p.starmap(compute_top_k_prob_mask, [(src_gen, src_train_dataset, src_algn_mask, k), 
     #                                              (tgt_gen, tgt_train_dataset, tgt_algn_mask, k)])
-    src_top_k_prob_mask, src_scalar_metrics = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, k)
-    tgt_top_k_prob_mask, tgt_scalar_metrics = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, k)
-    for k in src_scalar_metrics.keys(): src_scalar_metrics[f"src_{k}"] = src_scalar_metrics.pop(k)
-    for k in tgt_scalar_metrics.keys(): tgt_scalar_metrics[f"tgt_{k}"] = tgt_scalar_metrics.pop(k)
-    overall_scalar_metrics = {**src_scalar_metrics, **tgt_scalar_metrics}
+    src_top_k_prob_mask, src_scalar_metrics, src_r_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, k)
+    print(src_scalar_metrics)
+    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, k)
+    print(tgt_scalar_metrics)
 
-    # TODO: co-training - cross label #
-    ## top_k_prob_mask is a set of indexes (i, j): use j to access jth annotation, and i to access ith alignment. 
-    ### => alignment needs to be List[Dict[int, List[int]]] => augment annotation at the start?
-    ## update both languages' top_k_prob_mask by looping.
-    ### remove conflicting tokens
-    ## create new prob_mask of all zeros. Use top_k_prob_mask cross product indexing 
+    # Co-Training
+    # NOTE: looping is fine since number of self labels are small
+    src_idxs = (src_top_k_prob_mask + 1).nonzero()
+    tgt_idxs = (tgt_top_k_prob_mask + 1).nonzero()
+    conflicting_labels = 0
+    for tkn_idx, ann_idx in src_idxs:
+        src_wa = src_train_dataset.anns[ann_idx].alignment
+        for v in src_wa[tkn_idx.item()]: 
+            src_prob = src_top_k_prob_mask[tkn_idx, ann_idx]
+            tgt_prob = tgt_top_k_prob_mask[v, ann_idx]
+            if (tgt_prob == -1) or (src_prob > 0.5 == tgt_prob > 0.5):  # ensure most confident label does not conflict
+                tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
+            if src_prob > 0.5 == tgt_prob > 0.5: conflicting_labels += 1
+            
+    
+    for tkn_idx, ann_idx in tgt_idxs:
+        tgt_wa = tgt_train_dataset.anns[ann_idx].alignment
+        for v in tgt_wa[tkn_idx.item()]: 
+            tgt_prob = tgt_top_k_prob_mask[tkn_idx, ann_idx]
+            src_prob = src_top_k_prob_mask[v, ann_idx]
+            if (src_prob == -1) or (tgt_prob > 0.5 == src_prob > 0.5):  # ensure most confident label does not conflict
+                src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
+            if src_prob > 0.5 == tgt_prob > 0.5: conflicting_labels += 1
+    
+    src_top_k_pred = (src_top_k_prob_mask[src_top_k_prob_mask != -1] > 0.5).float()
+    src_p, src_r, src_f1 = PRFScore(average="binary")(src_r_mask[src_top_k_prob_mask != -1], src_top_k_pred)
+
+    tgt_top_k_pred = (tgt_top_k_prob_mask[tgt_top_k_prob_mask != -1] > 0.5).float()
+    tgt_p, tgt_r, tgt_f1 = PRFScore(average="binary")(tgt_r_mask[tgt_top_k_prob_mask != -1], tgt_top_k_pred)
+    overall_scalar_metrics = {
+        "src_top_k_p": src_p, "src_top_k_r": src_r, "src_top_k_f1": src_f1,
+        "tgt_top_k_p": tgt_p, "tgt_top_k_r": tgt_r, "tgt_top_k_f1": tgt_f1,
+        "conflicting_labels": conflicting_labels
+    }
+
+    print(overall_scalar_metrics)
+    exit(1)
+
     assert src_top_k_prob_mask.size(1) == len(src_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
     assert tgt_top_k_prob_mask.size(1) == len(tgt_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
     assert src_top_k_prob_mask.size() == tgt_top_k_prob_mask.size()
-    src_train_dataset.cotrain_mask = src_top_k_prob_mask
-    tgt_train_dataset.cotrain_mask = tgt_top_k_prob_mask
+    src_train_dataset.cotrain_mask = src_top_k_prob_mask.to(device)
+    tgt_train_dataset.cotrain_mask = tgt_top_k_prob_mask.to(device)
     return src_train_dataset, tgt_train_dataset, overall_scalar_metrics
 
 def main():
@@ -183,22 +213,22 @@ def main():
 
     src_documents: Dict[str, str] = load_documents(args.src_data_dir, docids=None)
     tgt_documents: Dict[str, str] = load_documents(args.tgt_data_dir, docids=None)
-    src_train_feat, src_val_feat, src_test_feat = create_datasets_features(load_datasets(args.data_dir), src_documents, device)
-    tgt_train_feat, tgt_val_feat, tgt_test_feat = create_datasets_features(load_datasets(args.data_dir), tgt_documents, device)
+    src_train_feat, src_val_feat, src_test_feat = create_datasets_features(load_datasets(args.src_data_dir), src_documents, device)
+    tgt_train_feat, tgt_val_feat, tgt_test_feat = create_datasets_features(load_datasets(args.tgt_data_dir), tgt_documents, device)
     src_train_feat, tgt_train_feat = add_wa_to_anns(src_train_feat, tgt_train_feat, src_was, tgt_was, src_documents, tgt_documents)
     src_algn_mask = get_algn_mask(src_train_feat)
     tgt_algn_mask = get_algn_mask(tgt_train_feat)
 
     # create train dataloader later
-    src_train_dataset = EraserDataset(src_train_feat, src_documents, tokenizer, embedding_model, logger)
-    src_val_dataset = EraserDataset(src_val_feat, src_documents, tokenizer, embedding_model, logger)
-    src_test_dataset = EraserDataset(src_test_feat, src_documents, tokenizer, embedding_model, logger)
+    src_train_dataset = EraserDataset(src_train_feat, tokenizer, embedding_model, logger)
+    src_val_dataset = EraserDataset(src_val_feat, tokenizer, embedding_model, logger)
+    src_test_dataset = EraserDataset(src_test_feat, tokenizer, embedding_model, logger)
     src_val_dataloader = DataLoader(src_val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     src_test_dataloader = DataLoader(src_test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
-    tgt_train_dataset = EraserDataset(tgt_train_feat, tgt_documents, tokenizer, embedding_model, logger)
-    tgt_val_dataset = EraserDataset(tgt_val_feat, tgt_documents, tokenizer, embedding_model, logger)
-    tgt_test_dataset = EraserDataset(tgt_test_feat, tgt_documents, tokenizer, embedding_model, logger)
+    tgt_train_dataset = EraserDataset(tgt_train_feat, tokenizer, embedding_model, logger)
+    tgt_val_dataset = EraserDataset(tgt_val_feat, tokenizer, embedding_model, logger)
+    tgt_test_dataset = EraserDataset(tgt_test_feat, tokenizer, embedding_model, logger)
     tgt_val_dataloader = DataLoader(tgt_val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     tgt_test_dataloader = DataLoader(tgt_test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     
@@ -215,7 +245,7 @@ def main():
     epochs = config["train"]["num_epochs"]
     best_val_target_metric = 0
     es_count = 0
-    k = math.ceil(config["train"]["cotrain_pn"] * len(src_train_anns))
+    k = math.ceil(config["train"]["cotrain_pn"] * len(src_train_dataset))
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
         # augment train datasets with cotrain masks

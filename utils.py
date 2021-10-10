@@ -945,7 +945,7 @@ if __name__ == "__main__":
     test_score_hard_rationale_predictions()
     # test_top_k_idxs_multid()
     test_prfscore()
-    # test_get_top_k_prob_mask()
+    test_get_top_k_prob_mask()
     # test_get_wordpiece_embeddings()
     # test_get_token_embeddings()
     print("Unit tests passed!")

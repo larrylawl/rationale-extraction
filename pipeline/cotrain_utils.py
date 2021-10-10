@@ -31,7 +31,7 @@ class EraserDataset(Dataset):
         assert len(t_e) == len(r)
         # t_e, r, l, ann_id = create_instance(self.anns[idx], self.docs, self.tokenizer, self.embedding_model, self.logger)
         c_mask = self.cotrain_mask[:, idx] if not self.cotrain_mask is None else None
-        return t_e, r, l, ann_id, c_mask
+        return t_e, len(t_e), r, l, ann_id, c_mask
 
 @dataclass(eq=True)
 class AnnotationFeature:
@@ -44,8 +44,8 @@ class AnnotationFeature:
 def pad_collate(batch):
     # print(len(batch))
     # print(type(batch))
-    (t_e, r, l, ann_id, c_mask) = zip(*batch)
-    t_e_lens = [t.size()[0] for t in t_e]
+    (t_e, t_e_lens, r, l, ann_id, c_mask) = zip(*batch)
+    # t_e_lens = [t.size()[0] for t in t_e]
 
     t_e_pad = pad_sequence(t_e)  # (L, bs, H_in)
     r_pad = pad_sequence(r)
