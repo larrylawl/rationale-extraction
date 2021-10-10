@@ -112,7 +112,8 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
 
         # perfect labelling instead
         if config["train"]["cotrain_perfect"]: 
-            r_mask[top_k_prob_mask == 0] = 0
+            r_mask[top_k_prob_mask == -1] = -1 
+            assert torch.equal((r_mask + 1).nonzero(), (top_k_prob_mask + 1).nonzero()), f"r_mask should take index from top_k_prob_mask"
             top_k_prob_mask = r_mask
 
     return top_k_prob_mask

@@ -81,8 +81,8 @@ def train(dataloader, enc, gen, optimizer, args, device):
         if "sup" in args and args.sup: mask_sup_loss = nn.BCELoss()(mask, r_pad)
         elif "cotrain" in args and args.cotrain:
             # only apply BCE on nonzero values of cotrain mask
-            # seems like mask is all 0s
-            mask_sup_loss = nn.BCELoss()(mask[c_mask.nonzero(as_tuple=True)], c_mask[c_mask != 0].to(device))  # mask: (L, bs), c_mask: (max_tokens, bs)
+            # c_mask: -1 == not labelled, 0 == not rationale, 1 == rationale
+            mask_sup_loss = nn.BCELoss()(mask[(c_mask + 1).nonzero(as_tuple=True)], c_mask[c_mask != -1].to(device))  # mask: (L, bs), c_mask: (max_tokens, bs)
         else: mask_sup_loss = torch.tensor(0)
         obj_loss = nn.CrossEntropyLoss()(logit, l)
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss

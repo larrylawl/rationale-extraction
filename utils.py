@@ -620,11 +620,11 @@ def top_k_idxs_multid(a, k):
     return res
 
 def get_top_k_prob_mask(prob_mask, k):
-    """ Returns new tensor with top k most confident elements in mask retained. Rest are 0. """
+    """ Returns new tensor with top k most confident elements in mask retained. Rest are -1. """
     prob_mask_flat = prob_mask.flatten()
     conf_masks = torch.abs(prob_mask_flat - 0.5)
     v, i = torch.topk(conf_masks, k)
-    res_flat = torch.zeros(prob_mask_flat.size())
+    res_flat = torch.full(prob_mask_flat.size(), -1.)
     res_flat[i] = prob_mask_flat[i]
     res = res_flat.view(prob_mask.size())
     
@@ -909,7 +909,7 @@ def test_top_k_idxs_multid():
 def test_get_top_k_prob_mask():
     prob_mask = torch.tensor([[0.7, 0.4], [0.1, 0.5]])
     top_k_prob_mask = get_top_k_prob_mask(prob_mask, 2)
-    expected = torch.tensor([[0.7, 0.], [0.1, 0.]])
+    expected = torch.tensor([[0.7, -1.], [0.1, -1.]])
     print(expected.type())
     print(top_k_prob_mask.type())
     assert torch.equal(top_k_prob_mask, expected), f"{top_k_prob_mask} != {expected}"
