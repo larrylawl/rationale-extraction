@@ -58,9 +58,10 @@ def pad_collate(batch):
     return t_e_pad, t_e_lens, r_pad, l, ann_ids, c_mask
 
 def tune_hp(config):
-    config["generator"]["selection_lambda"] = round(10 ** random.uniform(-4, -2), 5)
-    config["generator"]["continuity_lambda"] = round(10 ** random.uniform(-4, -2), 5)
-    config["train"]["lr"] = round(10 ** random.uniform(-4, -2), 5)
+    # config["generator"]["selection_lambda"] = round(10 ** random.uniform(-4, -2), 5)
+    # config["generator"]["continuity_lambda"] = round(10 ** random.uniform(-4, -2), 5)
+    # config["train"]["lr"] = round(10 ** random.uniform(-4, -2), 5)
+    config["train"]["sup_pn"] = round(random.uniform(0, 2), 5)
     
     return config
 

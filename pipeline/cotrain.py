@@ -102,9 +102,11 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
             tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens, average="micro")  # micro for valid comparison with top k scores
             running_scalar_metrics += torch.tensor([tok_p, tok_r, tok_f1])
 
-        # label top 1% of most confident tokens
-        prob_mask[algn_mask == 0] = 0.5   # ensure that tokens with no alignment (including padding) are not selected
-        top_k_prob_mask = get_top_k_prob_mask(prob_mask, k)  # (max_tokens, trg_size)
+        # label top k% of most confident tokens
+        prob_mask_dup = prob_mask.clone()
+        prob_mask_dup[algn_mask == 0] = 0.5 # ensure that tokens with no alignment (including padding) are not selected
+        top_k_prob_mask = get_top_k_prob_mask(prob_mask_dup, k)  # (max_tokens, trg_size)
+        del prob_mask_dup
 
         # perfect labelling instead
         if args.cotrain_perfect: 
@@ -126,42 +128,46 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
         total_scalar_metrics = running_scalar_metrics / (batch + 1)
         for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i]
 
-    return top_k_prob_mask, scalar_metrics, r_mask
+    return top_k_prob_mask, scalar_metrics, r_mask, prob_mask
         
 def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, k) -> DataLoader:
     """ Augments Eraserdataset with self-labels. """
     # with Pool(2) as p:
     #     op = p.starmap(compute_top_k_prob_mask, [(src_gen, src_train_dataset, src_algn_mask, k), 
     #                                              (tgt_gen, tgt_train_dataset, tgt_algn_mask, k)])
-    src_top_k_prob_mask, src_scalar_metrics, src_r_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, k)
+    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, k)
     print(src_scalar_metrics)
-    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, k)
+    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, k)
     print(tgt_scalar_metrics)
     
 
     # Co-Training
+    # Removes labels which are conflicting.
     # NOTE: looping is fine since number of self labels are small
     src_idxs = (src_top_k_prob_mask + 1).nonzero()
     tgt_idxs = (tgt_top_k_prob_mask + 1).nonzero()
     conflicting_labels = 0
     for tkn_idx, ann_idx in src_idxs:
         src_wa = src_train_dataset.anns[ann_idx].alignment
-        for v in src_wa[tkn_idx.item()]: 
-            src_prob = src_top_k_prob_mask[tkn_idx, ann_idx]
-            tgt_prob = tgt_top_k_prob_mask[v, ann_idx]
-            if (tgt_prob == -1) or (src_prob > 0.5 == tgt_prob > 0.5):  # ensure most confident label does not conflict
+        for v in src_wa[tkn_idx.item()]:  # implicitly asserts tkn in alignment
+            src_label = src_top_k_prob_mask[tkn_idx, ann_idx] > 0.5
+            tgt_label = tgt_prob_mask[v, ann_idx] > 0.5
+
+            if src_label == tgt_label: 
                 tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
-            if src_prob > 0.5 != tgt_prob > 0.5: conflicting_labels += 1
-            
+            else: 
+                conflicting_labels += 1            
     
     for tkn_idx, ann_idx in tgt_idxs:
         tgt_wa = tgt_train_dataset.anns[ann_idx].alignment
         for v in tgt_wa[tkn_idx.item()]: 
-            tgt_prob = tgt_top_k_prob_mask[tkn_idx, ann_idx]
-            src_prob = src_top_k_prob_mask[v, ann_idx]
-            if (src_prob == -1) or (tgt_prob > 0.5 == src_prob > 0.5):  # ensure most confident label does not conflict
+            tgt_label = tgt_top_k_prob_mask[tkn_idx, ann_idx] > 0.5
+            src_label = src_prob_mask[v, ann_idx] > 0.5
+
+            if src_label == tgt_label: 
                 src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
-            if src_prob > 0.5 != tgt_prob > 0.5: conflicting_labels += 1
+            else: 
+                conflicting_labels += 1
     
     src_top_k_pred = (src_top_k_prob_mask[src_top_k_prob_mask != -1] > 0.5).float()
     src_p, src_r, src_f1 = PRFScore(average="binary")(src_r_mask[src_top_k_prob_mask != -1], src_top_k_pred)
@@ -175,7 +181,6 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     }
 
     print(overall_scalar_metrics)
-    exit(1)
 
     assert src_top_k_prob_mask.size(1) == len(src_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
     assert tgt_top_k_prob_mask.size(1) == len(tgt_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
