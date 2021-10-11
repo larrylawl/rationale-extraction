@@ -61,7 +61,7 @@ def tune_hp(config):
     # config["generator"]["selection_lambda"] = round(10 ** random.uniform(-4, -2), 5)
     # config["generator"]["continuity_lambda"] = round(10 ** random.uniform(-4, -2), 5)
     # config["train"]["lr"] = round(10 ** random.uniform(-4, -2), 5)
-    config["train"]["sup_pn"] = round(random.uniform(0, 0.05), 5)
+    config["train"]["sup_pn"] = round(random.uniform(0.01, 0.05), 5)
     
     return config
 
@@ -78,10 +78,6 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
     labelled_batch: int = math.ceil(size / dataloader.batch_size)
 
     for batch, (t_e_pad, t_e_lens, r_pad, l, _, c_mask) in enumerate(tqdm(dataloader)):  
-        # to device
-        # r_pad = r_pad.to(device)
-        # l = l.to(device)
-
         # forward pass
         mask = gen(t_e_pad, t_e_lens)
         # hard yet differentiable by using the same trick as https://pytorch.org/docs/stable/generated/torch.nn.functional.gumbel_softmax.html#

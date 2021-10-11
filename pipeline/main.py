@@ -53,6 +53,7 @@ def main():
     config = read_json(args.config)
     if args.tune_hp:
         config = tune_hp(config)
+    assert 0 <= config["train"]["sup_pn"] <= 1
     write_json(config, os.path.join(args.out_dir, "config.json"))
     config["encoder"]["num_classes"] = len(dataset_mapping)
 
@@ -92,6 +93,7 @@ def main():
 
     epochs = config["train"]["num_epochs"]
     best_val_target_metric = 0
+    best_val_scalar_metrics = {}
     es_count = 0
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
@@ -111,6 +113,7 @@ def main():
         # early stopping
         if val_target_metric > best_val_target_metric:
             best_val_target_metric = val_target_metric
+            best_val_scalar_metrics = val_scalar_metrics
             es_count = 0
             torch.save(gen.state_dict(), os.path.join(args.out_dir, "best_gen_weights.pth"))
             torch.save(enc.state_dict(), os.path.join(args.out_dir, "best_enc_weights.pth"))
@@ -128,7 +131,10 @@ def main():
         writer.add_scalar(tag, val)
 
     test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
-    write_json(test_scalar_metrics, os.path.join(args.out_dir, "results.json"))
+    for k in list(best_val_scalar_metrics.keys()): 
+        best_val_scalar_metrics[f"best_{k}"] = best_val_scalar_metrics.pop(k)
+    overall_scalar_metrics = {**test_scalar_metrics, **best_val_scalar_metrics}
+    write_json(overall_scalar_metrics, os.path.join(args.out_dir, "results.json"))
     writer.close()
 
 if __name__ == "__main__":

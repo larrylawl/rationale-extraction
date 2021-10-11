@@ -205,6 +205,8 @@ def main():
     config = read_json(args.config)
     if args.tune_hp:
         config = tune_hp(config)
+    assert 0 <= config["train"]["sup_pn"] <= 1
+    assert 0 <= args.cotrain_step <= 1
     write_json(config, os.path.join(args.out_dir, "config.json"))
     config["encoder"]["num_classes"] = len(dataset_mapping)
 
@@ -254,7 +256,7 @@ def main():
     tgt_scheduler = ReduceLROnPlateau(tgt_optimizer, 'max', patience=2)
 
     epochs = config["train"]["num_epochs"]
-    best_val_target_metric = 0
+    best_val_target_metric = 0 
     es_count = 0
     cotrain_step = args.cotrain_step
     best_k = math.ceil(cotrain_step * len(src_train_dataset))
@@ -290,7 +292,7 @@ def main():
 
         # early stopping
         val_target_metric = src_val_target_metric + tgt_val_target_metric
-        if val_target_metric > best_val_target_metric:
+        if val_target_metric > best_val_target_metric:  # TODO: best initialised to 0, which is technically incorrect. should initialise to best val recorded
             best_val_target_metric = val_target_metric
             es_count = 0
             torch.save(src_gen.state_dict(), os.path.join(args.out_dir, "best_src_gen_weights.pth"))
