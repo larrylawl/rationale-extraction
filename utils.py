@@ -588,22 +588,35 @@ def plot_grad_flow(mean_grads, var_grads, layers, fp):
     plt.title("Gradient flow")
     plt.savefig(fp, bbox_inches='tight')
 
-def score_hard_rationale_predictions(mask_pad, rationale_pad, token_lengths):
+def score_hard_rationale_predictions(mask_pad, rationale_pad, token_lengths, average="macro"):
     """ Follows ERASER paper's implementation. Returns macro token f1 score. """
     assert mask_pad.size() == rationale_pad.size()  # (L, N) == (L, N)
     running_scores = torch.zeros(3)
-    prf_metric = PRFScore("binary")
-    for i in range(len(token_lengths)):
-        mask_instance = mask_pad[:token_lengths[i], i]
-        rationale_instance = rationale_pad[:token_lengths[i], i]
-        # print(f"mask instance: {mask_instance}")
-        # print(f"rat instance: {rationale_instance}")
-        assert len(mask_instance) == len(rationale_instance)
 
-        scores = prf_metric(rationale_instance, mask_instance)
-        running_scores += torch.tensor(scores)
+    if average == "macro":
+        for i in range(len(token_lengths)):
+            mask_instance = mask_pad[:token_lengths[i], i]
+            rationale_instance = rationale_pad[:token_lengths[i], i]
+            # print(f"mask instance: {mask_instance}")
+            # print(f"rat instance: {rationale_instance}")
+            assert len(mask_instance) == len(rationale_instance)
 
-    p, r, f1 = running_scores / len(token_lengths)
+            scores = PRFScore("binary")(rationale_instance, mask_instance)
+            running_scores += torch.tensor(scores)
+
+        p, r, f1 = running_scores / len(token_lengths)
+    elif average == "micro":
+        rat = []
+        mask = []
+        for i in range(len(token_lengths)):
+            mask_instance = mask_pad[:token_lengths[i], i]
+            rationale_instance = rationale_pad[:token_lengths[i], i]
+            mask.append(mask_instance)
+            rat.append(rationale_instance)
+
+        p, r, f1 = PRFScore("binary")(torch.cat(rat, dim=0), torch.cat(mask, dim=0))
+    else:
+        raise NotImplementedError
     return p, r, f1
 
 def top_k_idxs_multid(a, k):

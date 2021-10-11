@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_lite
+dataset_name=esnli_lightest
 exp_name=toy_exp
 
 src_data_dir=../data/esnli/$dataset_name
@@ -10,7 +10,7 @@ src_model_dir=../out/esnli_lite/sup_pn/1
 tgt_model_dir=../out/esnli_lite_fr/sup_pn/1
 config=../models/config.json
 out_dir=../out/$dataset_name/$exp_name
-cotrain_step=0.05
+cotrain_step=0.1
 repeat=1
 
 for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
