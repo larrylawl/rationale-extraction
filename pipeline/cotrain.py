@@ -29,6 +29,7 @@ args = None
 device = None
 writer = None
 config = None
+avg_tokens = 16  # from ERASER paper
 max_tokens = 113  # assume all sequences ≤ 113 tokens (correct for esnli)
 
 def parse_args():
@@ -41,7 +42,7 @@ def parse_args():
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
     parser.add_argument("--cotrain_perfect", action="store_true")
-    parser.add_argument("--cotrain_step", default=0.05, type=float, help="Train with [0, 1]% of supervised labels")
+    parser.add_argument("--cotrain_rate", default=0.05, type=float, help="Train with [0, 1]% of supervised labels")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -130,16 +131,19 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
 
     return top_k_prob_mask, scalar_metrics, r_mask, prob_mask
         
-def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, k) -> DataLoader:
+def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, rate) -> DataLoader:
     """ Augments Eraserdataset with self-labels. """
     # with Pool(2) as p:
     #     op = p.starmap(compute_top_k_prob_mask, [(src_gen, src_train_dataset, src_algn_mask, k), 
     #                                              (tgt_gen, tgt_train_dataset, tgt_algn_mask, k)])
-    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, k)
-    print(src_scalar_metrics)
-    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, k)
-    print(tgt_scalar_metrics)
-    
+    src_total_tokens = torch.count_nonzero(src_algn_mask)
+    src_size = math.ceil(rate * src_total_tokens)
+    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, src_size)
+
+    tgt_total_tokens = torch.count_nonzero(tgt_algn_mask)
+    tgt_size = math.ceil(rate * tgt_total_tokens)
+    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, tgt_size)
+
 
     # Co-Training
     # Removes labels which are conflicting.
@@ -151,23 +155,35 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
         src_wa = src_train_dataset.anns[ann_idx].alignment
         for v in src_wa[tkn_idx.item()]:  # implicitly asserts tkn in alignment
             src_label = src_top_k_prob_mask[tkn_idx, ann_idx] > 0.5
-            tgt_label = tgt_prob_mask[v, ann_idx] > 0.5
-
-            if src_label == tgt_label: 
+            tgt_label = tgt_top_k_prob_mask[v, ann_idx] > 0.5
+            tgt_no_label = tgt_top_k_prob_mask[v, ann_idx] == -1
+            if tgt_no_label or src_label == tgt_label:
                 tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
-            else: 
-                conflicting_labels += 1            
-    
+            else:
+                conflicting_labels += 1
+
+            # if src_label == tgt_label: 
+            #     tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
+            # else: 
+            #     conflicting_labels += 1            
+
     for tkn_idx, ann_idx in tgt_idxs:
         tgt_wa = tgt_train_dataset.anns[ann_idx].alignment
         for v in tgt_wa[tkn_idx.item()]: 
             tgt_label = tgt_top_k_prob_mask[tkn_idx, ann_idx] > 0.5
-            src_label = src_prob_mask[v, ann_idx] > 0.5
+            src_label = src_top_k_prob_mask[v, ann_idx] > 0.5
+            src_no_label = src_top_k_prob_mask[v, ann_idx] == -1
 
-            if src_label == tgt_label: 
+            if src_no_label or src_label == tgt_label:
                 src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
-            else: 
+            else:
                 conflicting_labels += 1
+
+            # src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
+            # if src_label == tgt_label: 
+            #     src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
+            # else: 
+            #     conflicting_labels += 1
     
     src_top_k_pred = (src_top_k_prob_mask[src_top_k_prob_mask != -1] > 0.5).float()
     src_p, src_r, src_f1 = PRFScore(average="binary")(src_r_mask[src_top_k_prob_mask != -1], src_top_k_pred)
@@ -205,7 +221,7 @@ def main():
     if args.tune_hp:
         config = tune_hp(config)
     assert 0 <= config["train"]["sup_pn"] <= 1
-    assert 0 <= args.cotrain_step <= 1
+    assert 0 <= args.cotrain_rate <= 1
     write_json(config, os.path.join(args.out_dir, "config.json"))
     config["encoder"]["num_classes"] = len(dataset_mapping)
 
@@ -260,13 +276,15 @@ def main():
     best_val_target_metric = src_val_metrics["best_val_f1"] + src_val_metrics["best_val_tok_f1"] + tgt_val_metrics["best_val_f1"] + tgt_val_metrics["best_val_tok_f1"]
     # best_val_target_metric = 0
     es_count = 0
-    best_cotrain_size = 0
-    cur_cotrain_step = args.cotrain_step
+    growth_rate = args.cotrain_rate
+    best_cotrain_rate = 0
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
         # augment train datasets with cotrain masks
-        cur_cotrain_size = best_cotrain_size + math.ceil(cur_cotrain_step * len(src_train_dataset))
-        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, cur_cotrain_size)
+        # TODO: cotrain size is wrong. it should be by number of tokens.
+        # cur_cotrain_size = best_cotrain_size + math.ceil(cur_cotrain_rate * len(src_train_dataset) * avg_tokens)
+        cur_cotrain_rate = best_cotrain_rate + growth_rate
+        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, cur_cotrain_rate)
         src_train_dataloader = DataLoader(src_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
         tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
@@ -292,6 +310,7 @@ def main():
         for tag, val in tgt_overall_scalar_metrics.items():
             writer.add_scalar(f"tgt_{tag}", val, t)
         writer.add_scalar('learning_rate', tgt_optimizer.param_groups[0]['lr'], t)
+        writer.add_scalar('cotrain_rate', cur_cotrain_rate, t)
 
         # early stopping and adjusting cotraining step
         val_target_metric = src_val_target_metric + tgt_val_target_metric
@@ -303,15 +322,15 @@ def main():
             torch.save(tgt_gen.state_dict(), os.path.join(args.out_dir, "best_tgt_gen_weights.pth"))
             torch.save(tgt_enc.state_dict(), os.path.join(args.out_dir, "best_tgt_enc_weights.pth"))
 
-            best_cotrain_size = cur_cotrain_size
+            best_cotrain_rate = cur_cotrain_rate
         else: 
             es_count += 1
             if es_count >= config["train"]["patience"]: 
                 logger.info("Early stopping!")
                 break
-        
-            cur_cotrain_step /= 2
-
+            
+            growth_rate /= 2
+            
     logger.info("Done training!")
     logger.info("Evaluating best model on test set")
     src_gen.load_state_dict(torch.load(os.path.join(args.out_dir, "best_src_gen_weights.pth")))

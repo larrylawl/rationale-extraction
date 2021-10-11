@@ -76,6 +76,7 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
     enc.train()
     size = config["train"]["sup_pn"] * len(dataloader.dataset)
     labelled_batch: int = math.ceil(size / dataloader.batch_size)
+    # labelled_batch_idx = random.sample(range(len(dataloader)), )
 
     for batch, (t_e_pad, t_e_lens, r_pad, l, _, c_mask) in enumerate(tqdm(dataloader)):  
         # forward pass
@@ -89,11 +90,16 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
         if batch < labelled_batch: mask_sup_loss = nn.BCELoss()(mask, r_pad)
-        elif "cotrain_pn" in args:
+        elif not c_mask is None:
+            # TODO: check if mask is correct
+
             # only apply BCE on nonzero values of cotrain mask
-            # c_mask: -1 == not labelled, 0 == not rationale, 1 == rationale
-            # NOTE: wrong as c_mask is prob not 0 or 1. should weight it instead
-            mask_sup_loss = nn.BCELoss()(mask[(c_mask + 1).nonzero(as_tuple=True)], c_mask[c_mask != -1].to(device))  # mask: (L, bs), c_mask: (max_tokens, bs)
+            mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)] # (L, bs)
+            mask_y_prob = c_mask[c_mask != -1] # (max_tokens, bs)
+            mask_y = (mask_y_prob > 0.5).float()
+            mask_sup_loss = nn.BCELoss(mask_y_prob)(mask_pred, mask_y) 
+            mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
+            print(f"mask_sup_loss: {mask_sup_loss}")
         else: mask_sup_loss = torch.tensor(0)
         obj_loss = nn.CrossEntropyLoss()(logit, l)
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
