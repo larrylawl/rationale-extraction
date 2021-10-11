@@ -139,10 +139,12 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     src_total_tokens = torch.count_nonzero(src_algn_mask)
     src_size = math.ceil(rate * src_total_tokens)
     src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, src_size)
+    print(src_scalar_metrics)
 
     tgt_total_tokens = torch.count_nonzero(tgt_algn_mask)
     tgt_size = math.ceil(rate * tgt_total_tokens)
     tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, tgt_size)
+    print(tgt_scalar_metrics)
 
 
     # Co-Training
@@ -271,10 +273,10 @@ def main():
     tgt_scheduler = ReduceLROnPlateau(tgt_optimizer, 'max', patience=2)
 
     epochs = config["train"]["num_epochs"]
-    src_val_metrics = read_json(os.path.join(args.src_model_dir, "results.json"))
-    tgt_val_metrics = read_json(os.path.join(args.tgt_model_dir, "results.json"))
-    best_val_target_metric = src_val_metrics["best_val_f1"] + src_val_metrics["best_val_tok_f1"] + tgt_val_metrics["best_val_f1"] + tgt_val_metrics["best_val_tok_f1"]
-    # best_val_target_metric = 0
+    # src_val_metrics = read_json(os.path.join(args.src_model_dir, "results.json"))
+    # tgt_val_metrics = read_json(os.path.join(args.tgt_model_dir, "results.json"))
+    # best_val_target_metric = src_val_metrics["best_val_f1"] + src_val_metrics["best_val_tok_f1"] + tgt_val_metrics["best_val_f1"] + tgt_val_metrics["best_val_tok_f1"]
+    best_val_target_metric = 0
     es_count = 0
     growth_rate = args.cotrain_rate
     best_cotrain_rate = 0
