@@ -61,7 +61,7 @@ def tune_hp(config):
     # config["generator"]["selection_lambda"] = round(10 ** random.uniform(-4, -2), 5)
     # config["generator"]["continuity_lambda"] = round(10 ** random.uniform(-4, -2), 5)
     # config["train"]["lr"] = round(10 ** random.uniform(-4, -2), 5)
-    config["train"]["sup_pn"] = round(random.uniform(0, 2), 5)
+    config["train"]["sup_pn"] = round(random.uniform(0, 0.05), 5)
     
     return config
 
@@ -74,7 +74,8 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
 
     gen.train()
     enc.train()
-    labelled_batch: int = math.ceil((config["train"]["sup_pn"] * len(dataloader)) / dataloader.batch_size)
+    size = config["train"]["sup_pn"] * len(dataloader.dataset)
+    labelled_batch: int = math.ceil(size / dataloader.batch_size)
 
     for batch, (t_e_pad, t_e_lens, r_pad, l, _, c_mask) in enumerate(tqdm(dataloader)):  
         # to device
@@ -91,7 +92,7 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
 
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
-        if batch <= labelled_batch: mask_sup_loss = nn.BCELoss()(mask, r_pad)
+        if batch < labelled_batch: mask_sup_loss = nn.BCELoss()(mask, r_pad)
         elif "cotrain_pn" in args:
             # only apply BCE on nonzero values of cotrain mask
             # c_mask: -1 == not labelled, 0 == not rationale, 1 == rationale

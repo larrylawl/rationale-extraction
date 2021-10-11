@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
     parser.add_argument("--cotrain_perfect", action="store_true")
-    parser.add_argument("--cotrain_pn", default=0.05, type=float, help="Train with [0, 1]% of supervised labels")
+    parser.add_argument("--cotrain_step", default=0.05, type=float, help="Train with [0, 1]% of supervised labels")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -181,6 +181,7 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     }
 
     print(overall_scalar_metrics)
+    exit(1)
 
     assert src_top_k_prob_mask.size(1) == len(src_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
     assert tgt_top_k_prob_mask.size(1) == len(tgt_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
@@ -255,11 +256,12 @@ def main():
     epochs = config["train"]["num_epochs"]
     best_val_target_metric = 0
     es_count = 0
-    k = math.ceil(args.cotrain_pn * len(src_train_dataset))
+    cotrain_step = args.cotrain_step
+    best_k = math.ceil(cotrain_step * len(src_train_dataset))
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
         # augment train datasets with cotrain masks
-        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, k)
+        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, best_k)
         src_train_dataloader = DataLoader(src_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
         tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 

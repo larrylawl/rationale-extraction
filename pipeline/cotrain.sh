@@ -6,11 +6,11 @@ exp_name=toy_exp
 
 src_data_dir=../data/esnli/$dataset_name
 tgt_data_dir=../data/esnli/${dataset_name}_fr
-src_model_dir=../out/esnli_lite/sup/0
-tgt_model_dir=../out/esnli_lite_fr/sup/0
+src_model_dir=../out/esnli_lite/sup_pn/1
+tgt_model_dir=../out/esnli_lite_fr/sup_pn/1
 config=../models/config.json
 out_dir=../out/$dataset_name/$exp_name
-cotrain_pn=0.1
+cotrain_step=0.05
 repeat=1
 
 for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
@@ -21,7 +21,7 @@ for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
         --config $config \
         --out_dir $out_dir/$i \
         --seed $(( 100 + $i )) \
-        --cotrain_pn $cotrain_pn 
+        --cotrain_step $cotrain_step 
         # --cotrain_perfect 
         # --tune_hp
 done
