@@ -44,7 +44,7 @@ class AnnotationFeature:
 def pad_collate(batch):
     # print(len(batch))
     # print(type(batch))
-    (t_e, t_e_lens, r, l, ann_id, c_mask) = zip(*batch)
+    (t_e, t_e_lens, r, l, ann_ids, c_mask) = zip(*batch)
     # t_e_lens = [t.size()[0] for t in t_e]
 
     t_e_pad = pad_sequence(t_e)  # (L, bs, H_in)
@@ -54,7 +54,7 @@ def pad_collate(batch):
     l = torch.stack(l, dim = 0)  # (bs)
     if c_mask[0] != None: c_mask = torch.stack(c_mask, dim = 1)
 
-    return t_e_pad, t_e_lens, r_pad, l, ann_id, c_mask
+    return t_e_pad, t_e_lens, r_pad, l, ann_ids, c_mask
 
 def tune_hp(config):
     config["generator"]["selection_lambda"] = round(10 ** random.uniform(-4, -2), 5)
@@ -195,6 +195,11 @@ dataset_mapping = {
     "entailment": 1,
     "neutral": 2
 }
+
+def set_seed(args):
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
 class MaskBCELoss:
     """ BCE loss that skips computation for value 0. 

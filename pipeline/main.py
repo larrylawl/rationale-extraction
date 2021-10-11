@@ -44,6 +44,7 @@ def main():
     global args, device, base_dataset_name, writer, config
     args = parse_args()
     logger.info(args)
+    set_seed(args)
     
     if os.path.exists(args.out_dir): shutil.rmtree(args.out_dir)
     os.makedirs(args.out_dir)
@@ -124,8 +125,12 @@ def main():
     gen.load_state_dict(torch.load(os.path.join(args.out_dir, "best_gen_weights.pth")))
     enc.load_state_dict(torch.load(os.path.join(args.out_dir, "best_enc_weights.pth")))
     test_scalar_metrics = test(test_dataloader, enc, gen, device, split="test")
+    for tag, val in test_scalar_metrics.items(): 
+        writer.add_scalar(tag, val)
+
     test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
     write_json(test_scalar_metrics, os.path.join(args.out_dir, "results.json"))
+    writer.close()
 
 if __name__ == "__main__":
     main()

@@ -64,18 +64,11 @@ def add_wa_to_anns(src_train_anns, tgt_train_anns, src_was, tgt_was, src_documen
         src_ann.alignment = {**src_doc_h_wa, **add_offsets(src_doc_p_wa, src_offset, tgt_offset)}
         tgt_ann.alignment = {**tgt_doc_h_wa, **add_offsets(tgt_doc_p_wa, tgt_offset, src_offset)}
 
-        # print(src_ann.annotation_id)
-        # print(src_offset)
-        # print(tgt_offset)
-        # # print(src_doc_h_wa)
-        # # print(src_doc_p_wa)
-        # print(tgt_doc_h_wa)
-        # print(tgt_doc_p_wa)
-        # # print(src_ann.alignment)
-        # print(tgt_ann.alignment)
     return src_train_anns, tgt_train_anns
 
 def get_algn_mask(anns):
+    """ (i, j) indicates if the ith token of jth annotation has an alignment. """
+
     algn_mask = torch.zeros(max_tokens, len(anns))
     for i, ann in enumerate(anns):
         for k in ann.alignment.keys(): algn_mask[k][i] = 1
@@ -90,17 +83,23 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
     gen.eval()
     # shuffle false for prob_mask[:, 0] to correspond to annotation 0.
     dataloader = DataLoader(dataset, batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)
+    running_scalar_labels = [f"tok_p", f"tok_r", f"tok_f1"]
+    running_scalar_metrics = torch.zeros(len(running_scalar_labels))
 
     with torch.no_grad():
         # forward pass to obtain prob of all tokens
         prob_mask = torch.zeros(max_tokens, len(dataset))
         r_mask = torch.zeros(max_tokens, len(dataset))
         bs = config["train"]["batch_size"]
-        for batch, (t_e_pad, t_e_lens, r_pad, _, _, _) in enumerate(tqdm(dataloader)): 
+        for batch, (t_e_pad, t_e_lens, r_pad, _, ann_ids, _) in enumerate(tqdm(dataloader)): 
             mask = gen(t_e_pad, t_e_lens)  # (L, bs)
             assert mask.size() == r_pad.size()
-            prob_mask[:, batch*bs:(batch+1)*bs] = F.pad(mask.T, (0, max_tokens - mask.size(0))).T # (max_tokens, bs), pad to max_tokens
-            r_mask[:, batch*bs:(batch+1)*bs] = F.pad(r_pad.T, (0, max_tokens - r_pad.size(0))).T # (max_tokens, bs)
+            prob_mask[:, batch*bs:(batch+1)*bs] = F.pad(mask.T, (0, max_tokens - len(mask)), value=0.5).T # (max_tokens, bs), pad to max_tokens
+            r_mask[:, batch*bs:(batch+1)*bs] = F.pad(r_pad.T, (0, max_tokens - len(r_pad)), value=0.5).T # (max_tokens, bs)
+
+            mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
+            tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens, average="micro")  # micro for valid comparison with top k scores
+            running_scalar_metrics += torch.tensor([tok_p, tok_r, tok_f1])
 
         # label top 1% of most confident tokens
         prob_mask[algn_mask == 0] = 0.5   # ensure that tokens with no alignment (including padding) are not selected
@@ -123,6 +122,9 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
             "top_k_f1": f1
         }
 
+        total_scalar_metrics = running_scalar_metrics / (batch + 1)
+        for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i]
+
     return top_k_prob_mask, scalar_metrics, r_mask
         
 def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, k) -> DataLoader:
@@ -134,6 +136,7 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     print(src_scalar_metrics)
     tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, k)
     print(tgt_scalar_metrics)
+    
 
     # Co-Training
     # NOTE: looping is fine since number of self labels are small
@@ -185,6 +188,7 @@ def main():
     global args, device, writer, config
     args = parse_args()
     logger.info(args)
+    set_seed(args)
     
     if os.path.exists(args.out_dir): shutil.rmtree(args.out_dir)
     os.makedirs(args.out_dir)
