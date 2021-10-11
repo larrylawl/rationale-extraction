@@ -40,7 +40,8 @@ def parse_args():
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
-    parser.add_argument("--cotrain", action="store_true")
+    parser.add_argument("--cotrain_perfect", action="store_true")
+    parser.add_argument("--cotrain_pn", default=0.05, type=float, help="Train with [0, 1]% of supervised labels")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -106,7 +107,7 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
         top_k_prob_mask = get_top_k_prob_mask(prob_mask, k)  # (max_tokens, trg_size)
 
         # perfect labelling instead
-        if config["train"]["cotrain_perfect"]: 
+        if args.cotrain_perfect: 
             top_k_r_mask = r_mask.clone()
             top_k_r_mask[top_k_prob_mask == -1] = -1
             assert torch.equal((top_k_r_mask + 1).nonzero(), (top_k_prob_mask + 1).nonzero()), f"r_mask should take index from top_k_prob_mask"
@@ -249,7 +250,7 @@ def main():
     epochs = config["train"]["num_epochs"]
     best_val_target_metric = 0
     es_count = 0
-    k = math.ceil(config["train"]["cotrain_pn"] * len(src_train_dataset))
+    k = math.ceil(args.cotrain_pn * len(src_train_dataset))
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
         # augment train datasets with cotrain masks
@@ -258,13 +259,13 @@ def main():
         tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
         # vanilla training loops
-        src_train_scalar_metrics, _ = train(src_train_dataloader, src_enc, src_gen, src_optimizer, args, device)
+        src_train_scalar_metrics, _ = train(src_train_dataloader, src_enc, src_gen, src_optimizer, args, device, config)
         src_val_scalar_metrics = test(src_val_dataloader, src_enc, src_gen, device)
         src_overall_scalar_metrics = {**src_train_scalar_metrics, **src_val_scalar_metrics}
         src_val_target_metric = src_overall_scalar_metrics["val_f1"] + src_overall_scalar_metrics["val_tok_f1"]
         src_scheduler.step(src_val_target_metric)
 
-        tgt_train_scalar_metrics, _ = train(tgt_train_dataloader, tgt_enc, tgt_gen, tgt_optimizer, args, device)
+        tgt_train_scalar_metrics, _ = train(tgt_train_dataloader, tgt_enc, tgt_gen, tgt_optimizer, args, device, config)
         tgt_val_scalar_metrics = test(tgt_val_dataloader, tgt_enc, tgt_gen, device)
         tgt_overall_scalar_metrics = {**tgt_train_scalar_metrics, **tgt_val_scalar_metrics}
         tgt_val_target_metric = tgt_overall_scalar_metrics["val_f1"] + tgt_overall_scalar_metrics["val_tok_f1"]

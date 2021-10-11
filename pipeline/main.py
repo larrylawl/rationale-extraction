@@ -34,7 +34,6 @@ def parse_args():
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
-    parser.add_argument("--sup", action="store_true")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -96,7 +95,7 @@ def main():
     es_count = 0
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
-        train_scalar_metrics, _ = train(train_dataloader, enc, gen, optimizer, args, device)
+        train_scalar_metrics, _ = train(train_dataloader, enc, gen, optimizer, args, device, config)
         val_scalar_metrics = test(val_dataloader, enc, gen, device)
         overall_scalar_metrics = {**train_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]

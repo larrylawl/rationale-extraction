@@ -1,4 +1,5 @@
 import sys; sys.path.insert(0, "..")
+import math
 import numpy as np
 import random
 import torch
@@ -63,7 +64,7 @@ def tune_hp(config):
     
     return config
 
-def train(dataloader, enc, gen, optimizer, args, device):
+def train(dataloader, enc, gen, optimizer, args, device, config):
     running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_cont_loss", "trg_sel_loss", "trg_mask_sup_loss", "trg_total_f1", "trg_tok_precision", "trg_tok_recall", "trg_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     # total_params = len(tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters())))
@@ -72,6 +73,7 @@ def train(dataloader, enc, gen, optimizer, args, device):
 
     gen.train()
     enc.train()
+    labelled_batch: int = math.ceil((config["train"]["sup_pn"] * len(dataloader)) / dataloader.batch_size)
 
     for batch, (t_e_pad, t_e_lens, r_pad, l, _, c_mask) in enumerate(tqdm(dataloader)):  
         # to device
@@ -88,8 +90,8 @@ def train(dataloader, enc, gen, optimizer, args, device):
 
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
-        if "sup" in args and args.sup: mask_sup_loss = nn.BCELoss()(mask, r_pad)
-        elif "cotrain" in args and args.cotrain:
+        if batch <= labelled_batch: mask_sup_loss = nn.BCELoss()(mask, r_pad)
+        elif "cotrain_pn" in args:
             # only apply BCE on nonzero values of cotrain mask
             # c_mask: -1 == not labelled, 0 == not rationale, 1 == rationale
             # NOTE: wrong as c_mask is prob not 0 or 1. should weight it instead
