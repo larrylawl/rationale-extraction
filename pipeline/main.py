@@ -12,7 +12,6 @@ from torch.utils.tensorboard import SummaryWriter
 import argparse
 from typing import Dict, List, Tuple
 from transformers import AutoTokenizer, AutoModel
-from tqdm import tqdm
 import random
 
 from pipeline.cotrain_utils import *
@@ -31,6 +30,7 @@ config = None
 def parse_args():
     parser = argparse.ArgumentParser("Translates the files in docs.")
     parser.add_argument("--data_dir", required=True, help="Input directory to data.")
+    parser.add_argument("--model_dir", default=None, help="Model weights file path. If none, trains from scratch.")
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
@@ -81,7 +81,7 @@ def main():
     test_dataloader = DataLoader(test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
     # instantiate models
-    enc, gen = instantiate_models(config, device)
+    enc, gen = instantiate_models(config, device, os.path.join(args.model_dir, "best_enc_weights.pth"), os.path.join(args.model_dir, "best_gen_weights.pth"))
 
     # Note: no longer used
     # for gradient flow tracking later

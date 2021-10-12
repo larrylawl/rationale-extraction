@@ -288,6 +288,7 @@ def main():
     # best_cotrain_rate = 0
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
+        # TODO: only label with best models
         # augment train datasets with cotrain masks
         # cur_cotrain_rate = best_cotrain_rate + growth_rate
         src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args.cotrain_rate)
