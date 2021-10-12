@@ -61,7 +61,8 @@ def tune_hp(config):
     # config["generator"]["selection_lambda"] = round(10 ** random.uniform(-4, -2), 5)
     # config["generator"]["continuity_lambda"] = round(10 ** random.uniform(-4, -2), 5)
     # config["train"]["lr"] = round(10 ** random.uniform(-4, -2), 5)
-    config["train"]["sup_pn"] = round(random.uniform(0.01, 0.05), 5)
+    # config["train"]["sup_pn"] = round(random.uniform(0.01, 0.05), 5)
+    config["train"]["rat_multp"] = round(random.uniform(2, 10), 5)
     
     return config
 
@@ -90,15 +91,19 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
 
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
-        if batch in label_batch_idx: mask_sup_loss = nn.BCELoss()(mask, r_pad)
-        elif not c_mask is None:
+        if batch in label_batch_idx: 
+            # NOTE: added rat multp! if works, should use it on rationale mask too
+            mask_sup_loss = config["train"]["rat_multp"] * nn.BCELoss()(mask, r_pad)
+        elif not c_mask[0] == None:
             # TODO: check if mask is correct
             # only apply BCE on nonzero values of cotrain mask
             mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)] # (L, bs)
-            mask_y_prob = c_mask[c_mask != -1] # (max_tokens, bs)
+            mask_y_prob = c_mask[c_mask != -1] # (max_tokens, bs)  # TODO: change to confidence
+            mask_y_conf = torch.abs(mask_y_prob - 0.5)
             mask_y = (mask_y_prob > 0.5).float()
-            mask_sup_loss = nn.BCELoss(mask_y_prob)(mask_pred, mask_y) 
+            mask_sup_loss = nn.BCELoss(mask_y_conf)(mask_pred, mask_y) 
             mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
+            print(f"mask_sup_loss: {mask_sup_loss}")
         else: mask_sup_loss = torch.tensor(0)
         obj_loss = nn.CrossEntropyLoss()(logit, l)
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss

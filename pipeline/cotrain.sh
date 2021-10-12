@@ -21,7 +21,7 @@ for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
         --config $config \
         --out_dir $out_dir/$i \
         --seed $(( 100 + $i )) \
-        --cotrain_rate $cotrain_rate
-        # --cotrain_perfect 
+        --cotrain_rate $cotrain_rate \
+        --cotrain_perfect 
         # --tune_hp
 done
