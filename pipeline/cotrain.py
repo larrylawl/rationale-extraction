@@ -19,7 +19,7 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 
 from pipeline.cotrain_utils import *
-from utils import get_top_k_prob_mask, instantiate_models, load_datasets, create_instance, load_documents, load_id_jsonl_as_dict, get_optimizer, parse_alignment, read_json, top_k_idxs_multid, write_json, add_offsets
+from utils import get_top_k_prob_mask, higher_conf, instantiate_models, load_datasets, create_instance, load_documents, load_id_jsonl_as_dict, get_optimizer, parse_alignment, prob_to_conf, read_json, same_label, top_k_idxs_multid, write_json, add_offsets
 
 logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadName)s %(message)s')
 
@@ -30,6 +30,7 @@ writer = None
 config = None
 avg_tokens = 16  # from ERASER paper
 max_tokens = 113  # assume all sequences ≤ 113 tokens (correct for esnli)
+label_fns = [higher_conf]
 
 def parse_args():
     parser = argparse.ArgumentParser("Cotraining.")
@@ -78,8 +79,8 @@ def get_algn_mask(anns):
         # print(ann.alignment.keys())
     return algn_mask
     
-def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
-    """ Returns prob mask tensor with only the top k most confident tokens retained; remaining tokens are zeroed out.
+def compute_top_k_prob_mask(gen, dataset, algn_mask, r):
+    """ Returns prob mask tensor with only the top r% most confident tokens retained; remaining tokens are zeroed out.
     Size (L, N), where L denotes the longest sequence length and N denotes the training size.  """
 
     gen.eval()
@@ -106,7 +107,10 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
         # label top k% of most confident tokens
         prob_mask_dup = prob_mask.clone()
         prob_mask_dup[algn_mask == 0] = 0.5 # ensure that tokens with no alignment (including padding) are not selected
-        top_k_prob_mask = get_top_k_prob_mask(prob_mask_dup, k)  # (max_tokens, trg_size)
+
+        total_tokens = torch.count_nonzero(algn_mask)
+        k = math.ceil(r * total_tokens)
+        top_k_prob_mask = get_top_k_prob_mask(prob_mask_dup, k)# (max_tokens, trg_size)
         del prob_mask_dup
 
         # perfect labelling instead
@@ -133,38 +137,37 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, k):
         
 def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, rate) -> DataLoader:
     """ Augments Eraserdataset with self-labels. """
-    src_total_tokens = torch.count_nonzero(src_algn_mask)
-    src_size = math.ceil(rate * src_total_tokens)
-    tgt_total_tokens = torch.count_nonzero(tgt_algn_mask)
-    tgt_size = math.ceil(rate * tgt_total_tokens)
-
     # src_future = torch.jit.fork(compute_top_k_prob_mask, src_gen, src_train_dataset, src_algn_mask, src_size)
     # tgt_future = torch.jit.fork(compute_top_k_prob_mask, tgt_gen, tgt_train_dataset, tgt_algn_mask, tgt_size)
     # src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = torch.jit.wait(src_future)
     # tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = torch.jit.wait(tgt_future)
 
-    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, src_size)
-    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, tgt_size)
-    print(src_scalar_metrics)
-    print(tgt_scalar_metrics)
+    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, rate)
+    logger.info(src_scalar_metrics)
+    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, rate)
+    logger.info(tgt_scalar_metrics)
 
 
     # Co-Training
     # Removes labels which are conflicting.
-    # NOTE: looping is fine since number of self labels are small
+    # NOTE: looping is fine since number of self labels are small. if r == 1, should vectorize
+    # TODO: should take max of prob
     src_idxs = (src_top_k_prob_mask + 1).nonzero()
     tgt_idxs = (tgt_top_k_prob_mask + 1).nonzero()
-    conflicting_labels = 0
+    denied_labels = 0
     for tkn_idx, ann_idx in src_idxs:
         src_wa = src_train_dataset.anns[ann_idx].alignment
         for v in src_wa[tkn_idx.item()]:  # implicitly asserts tkn in alignment
-            src_label = src_top_k_prob_mask[tkn_idx, ann_idx] > 0.5
-            tgt_label = tgt_top_k_prob_mask[v, ann_idx] > 0.5
-            tgt_no_label = tgt_top_k_prob_mask[v, ann_idx] == -1
-            if tgt_no_label or src_label == tgt_label:
+            src_prob = src_top_k_prob_mask[tkn_idx, ann_idx]
+            tgt_prob = tgt_top_k_prob_mask[v, ann_idx]
+            tgt_no_label = tgt_prob == -1
+
+            # NOTE: when you only label same labels, it won't change score since labels remain
+            if tgt_no_label or label(src_prob, tgt_prob, label_fns):
+                # print('inside')
                 tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
             else:
-                conflicting_labels += 1
+                denied_labels += 1
 
             # if src_label == tgt_label: 
             #     tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
@@ -174,14 +177,14 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     for tkn_idx, ann_idx in tgt_idxs:
         tgt_wa = tgt_train_dataset.anns[ann_idx].alignment
         for v in tgt_wa[tkn_idx.item()]: 
-            tgt_label = tgt_top_k_prob_mask[tkn_idx, ann_idx] > 0.5
-            src_label = src_top_k_prob_mask[v, ann_idx] > 0.5
+            tgt_prob = tgt_top_k_prob_mask[tkn_idx, ann_idx]
+            src_prob = src_top_k_prob_mask[v, ann_idx]
             src_no_label = src_top_k_prob_mask[v, ann_idx] == -1
 
-            if src_no_label or src_label == tgt_label:
+            if src_no_label or label(tgt_prob, src_prob, label_fns):
                 src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
             else:
-                conflicting_labels += 1
+                denied_labels += 1
 
             # src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
             # if src_label == tgt_label: 
@@ -197,8 +200,10 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     overall_scalar_metrics = {
         "src_top_k_p": src_p, "src_top_k_r": src_r, "src_top_k_f1": src_f1,
         "tgt_top_k_p": tgt_p, "tgt_top_k_r": tgt_r, "tgt_top_k_f1": tgt_f1,
-        "conflicting_labels": conflicting_labels
+        "denied_labels": denied_labels
     }
+    logger.info(overall_scalar_metrics)
+    exit(1)
 
     assert src_top_k_prob_mask.size(1) == len(src_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
     assert tgt_top_k_prob_mask.size(1) == len(tgt_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
@@ -278,14 +283,14 @@ def main():
     # best_val_target_metric = src_val_metrics["best_val_f1"] + src_val_metrics["best_val_tok_f1"] + tgt_val_metrics["best_val_f1"] + tgt_val_metrics["best_val_tok_f1"]
     best_val_target_metric = 0
     es_count = 0
-    cotrain_patience_count = 0
-    growth_rate = args.cotrain_rate
-    best_cotrain_rate = 0
+    # cotrain_patience_count = 0
+    # growth_rate = args.cotrain_rate
+    # best_cotrain_rate = 0
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
         # augment train datasets with cotrain masks
-        cur_cotrain_rate = best_cotrain_rate + growth_rate
-        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, cur_cotrain_rate)
+        # cur_cotrain_rate = best_cotrain_rate + growth_rate
+        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args.cotrain_rate)
         src_train_dataloader = DataLoader(src_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
         tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
@@ -311,7 +316,7 @@ def main():
         for tag, val in tgt_overall_scalar_metrics.items():
             writer.add_scalar(f"tgt_{tag}", val, t)
         writer.add_scalar('learning_rate', tgt_optimizer.param_groups[0]['lr'], t)
-        writer.add_scalar('cotrain_rate', cur_cotrain_rate, t)
+        # writer.add_scalar('cotrain_rate', cur_cotrain_rate, t)
 
         # early stopping and adjusting cotraining step
         val_target_metric = src_val_target_metric + tgt_val_target_metric
@@ -323,18 +328,18 @@ def main():
             torch.save(tgt_gen.state_dict(), os.path.join(args.out_dir, "best_tgt_gen_weights.pth"))
             torch.save(tgt_enc.state_dict(), os.path.join(args.out_dir, "best_tgt_enc_weights.pth"))
 
-            best_cotrain_rate = cur_cotrain_rate
-            cotrain_patience_count = 0
+            # best_cotrain_rate = cur_cotrain_rate
+            # cotrain_patience_count = 0
         else: 
             es_count += 1
             if es_count >= config["train"]["patience"]: 
                 logger.info("Early stopping!")
                 break
             
-            cotrain_patience_count += 1
-            if cotrain_patience_count >= args.cotrain_patience:
-                growth_rate /= 2
-                cotrain_patience_count = 0
+            # cotrain_patience_count += 1
+            # if cotrain_patience_count >= args.cotrain_patience:
+            #     growth_rate /= 2
+            #     cotrain_patience_count = 0
             
     logger.info("Done training!")
     logger.info("Evaluating best model on test set")

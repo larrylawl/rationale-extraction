@@ -1,5 +1,6 @@
 import sys; sys.path.insert(0, "..")
 import math
+from functools import reduce
 import numpy as np
 import random
 import torch
@@ -11,7 +12,8 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 from tqdm import tqdm
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
-from utils import PRFScore, create_instance, get_token_embeddings, score_hard_rationale_predictions, Annotation, Evidence, generate_document_evidence_map
+from utils import PRFScore, create_instance, get_token_embeddings, higher_conf, same_label, score_hard_rationale_predictions, Annotation, Evidence, generate_document_evidence_map
+
 
 class EraserDataset(Dataset):
     """ ERASER dataset. """
@@ -92,8 +94,7 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
         if batch in label_batch_idx: 
-            # NOTE: added rat multp! if works, should use it on rationale mask too
-            mask_sup_loss = config["train"]["rat_multp"] * nn.BCELoss()(mask, r_pad)
+            mask_sup_loss = nn.BCELoss()(mask, r_pad)
         elif not c_mask[0] == None:
             # TODO: check if mask is correct
             # only apply BCE on nonzero values of cotrain mask
@@ -103,7 +104,7 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
             mask_y = (mask_y_prob > 0.5).float()
             mask_sup_loss = nn.BCELoss(mask_y_conf)(mask_pred, mask_y) 
             mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
-            print(f"mask_sup_loss: {mask_sup_loss}")
+            # print(f"mask_sup_loss: {mask_sup_loss}")
         else: mask_sup_loss = torch.tensor(0)
         obj_loss = nn.CrossEntropyLoss()(logit, l)
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
@@ -211,56 +212,34 @@ def set_seed(args):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-class MaskBCELoss:
-    """ BCE loss that skips computation for value 0. 
-    Let x = [1, 1, 0]
-    f(x) = x_1 + x_2 = 3
-    df(x) / dx = [df(x) / dx_1, ..., df(x) / dx_3] = [1, 1, 0]
-    Gradient for skipped value (i.e. x_3) will then be 0.
-    """
-    
-    def __call__(self, pred: torch.Tensor, target: torch.Tensor) -> float:
-        # only compute BCE for 
-        # bce_loss = -1 * (target * torch.log(pred) + (1 - target) * torch.log(1 - pred))
+def label(prob_a: Tensor, prob_b: Tensor, fns):
+    res = reduce(lambda res, fn: res and fn(prob_a, prob_b), fns, True)
+    return res
 
-        # compute loss for only specific elements. 
-        # if i compute for everything, it'll detect operation all.
-
-        loss = torch.where(pred == 0, 
-                    pred,
-                    torch.tensor(1.0))  # BCE
-
-        avg_loss = sum(loss) / torch.count_nonzero(pred)
-        return avg_loss
 
 # TESTS
-def test_custom_bce_loss():
-    mask_bce_loss = MaskBCELoss()
-    loss = nn.BCELoss()
-    m = nn.Sigmoid()
+def test_label():
+    prob_a = torch.tensor(0.2)
+    prob_b = torch.tensor(0.4)
+    fns = [same_label]
+    assert label(prob_a, prob_b, fns) == True
 
-    # test for normal bce
-    input = torch.randn(3, requires_grad=True)
-    target = torch.empty(3).random_(2)
-    output = mask_bce_loss(m(input), target)
-    output.backward()
-    print(input.grad)
-    expected_output = loss(m(input), target)
-    # assert torch.equal(output, expected_output), f"{output} != {expected_output}"
+    prob_a = torch.tensor(0.2)
+    prob_b = torch.tensor(0.6)
+    fns = [same_label]
+    assert label(prob_a, prob_b, fns) == False
 
-    # test for skip
-    # test for normal bce
-    input = torch.tensor([0.2, 0, 0.8], requires_grad=True)
-    target = torch.tensor([0, 1, 1])
-    output = mask_bce_loss(input, target)
-    expected_output = -torch.log(torch.tensor(0.8))
-    output.backward()
-    print(input.grad)
-    # expected_output = loss(m(input), target)
-    # assert torch.equal(output, expected_output), f"{output} != {expected_output}"
+    prob_a = torch.tensor(0.2)
+    prob_b = torch.tensor(0.9)
+    fns = [higher_conf]
+    assert label(prob_a, prob_b, fns) == False
 
+    prob_a = torch.tensor(0.4)
+    prob_b = torch.tensor(0.45)
+    fns = [same_label, higher_conf]
+    assert label(prob_a, prob_b, fns) == True
 
 if __name__ == "__main__":
     print("Running unit tests...")
-    test_custom_bce_loss()
+    test_label()
     print("Unit tests passed!")
