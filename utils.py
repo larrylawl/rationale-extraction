@@ -636,6 +636,16 @@ def get_top_k_prob_mask(prob_mask, k):
     
     return res
 
+def same_label(prob_a, prob_b):
+    res = (prob_a > 0.5) == (prob_b > 0.5)
+    return res
+
+def prob_to_conf(prob):
+    return torch.abs(prob - 0.5) * 2  # *2 so that prob 1 => conf 1
+    
+def higher_conf(prob_a, prob_b):
+    return prob_to_conf(prob_a) > prob_to_conf(prob_b)
+
 def parse_alignment(algn: str, reverse=False) -> Dict[int, List[int]]:
     """ Returns dictionary whose key i and sorted array of values j corresponds to the i-j Pharaoh format of input alignment.
     """
@@ -947,7 +957,19 @@ def test_prfscore():
         assert np.isclose(my_r.item(), r)
         assert np.isclose(my_f1.item(), f1)
 
+def test_same_label():
+    prob_a = 0.2
+    prob_b = 0.2
+    assert same_label(prob_a, prob_b) == True
 
+def test_higher_conf():
+    prob_a = torch.tensor(0.2)
+    prob_b = torch.tensor(0.9)
+    assert higher_conf(prob_b, prob_a) == True
+
+def test_prob_to_conf():
+    prob_a = torch.tensor(0.4)
+    assert np.isclose(prob_to_conf(prob_a).item(), 0.1), prob_to_conf(prob_a).item()
 
 
 if __name__ == "__main__":
@@ -955,12 +977,15 @@ if __name__ == "__main__":
     # test_merge_character_spans()
     # test_merge_wordpiece_embeddings_by_word_ids()
     # test_gen_loss()
-    test_score_hard_rationale_predictions()
+    # test_score_hard_rationale_predictions()
     # test_top_k_idxs_multid()
-    test_prfscore()
-    test_get_top_k_prob_mask()
+    # test_prfscore()
+    # test_get_top_k_prob_mask()
     # test_get_wordpiece_embeddings()
     # test_get_token_embeddings()
+    test_same_label()
+    test_prob_to_conf()
+    test_higher_conf()
     print("Unit tests passed!")
 
 

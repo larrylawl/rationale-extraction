@@ -2,7 +2,7 @@
 set -e
 
 dataset_name=esnli_lite
-exp_name=toy_exp
+exp_name=cotrain/perfect_1_weight_fix
 
 src_data_dir=../data/esnli/$dataset_name
 tgt_data_dir=../data/esnli/${dataset_name}_fr
@@ -21,7 +21,7 @@ for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
         --config $config \
         --out_dir $out_dir/$i \
         --seed $(( 100 + $i )) \
-        --cotrain_rate $cotrain_rate
-        # --cotrain_perfect 
+        --cotrain_rate $cotrain_rate \
+        --cotrain_perfect 
         # --tune_hp
 done

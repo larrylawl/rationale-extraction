@@ -31,6 +31,6 @@
         "patience": 5,
         "lr": 1e-4,
         "batch_size": 64,
-        "sup_pn": 0
+        "sup_pn": 0.05
     }
 }

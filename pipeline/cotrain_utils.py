@@ -12,7 +12,7 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 from tqdm import tqdm
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
-from utils import PRFScore, create_instance, get_token_embeddings, higher_conf, same_label, score_hard_rationale_predictions, Annotation, Evidence, generate_document_evidence_map
+from utils import PRFScore, create_instance, get_token_embeddings, higher_conf, prob_to_conf, same_label, score_hard_rationale_predictions, Annotation, Evidence, generate_document_evidence_map
 
 
 class EraserDataset(Dataset):
@@ -96,11 +96,10 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
         if batch in label_batch_idx: 
             mask_sup_loss = nn.BCELoss()(mask, r_pad)
         elif not c_mask[0] == None:
-            # TODO: check if mask is correct
             # only apply BCE on nonzero values of cotrain mask
             mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)] # (L, bs)
             mask_y_prob = c_mask[c_mask != -1] # (max_tokens, bs)  # TODO: change to confidence
-            mask_y_conf = torch.abs(mask_y_prob - 0.5)
+            mask_y_conf = prob_to_conf(mask_y_prob)
             mask_y = (mask_y_prob > 0.5).float()
             mask_sup_loss = nn.BCELoss(mask_y_conf)(mask_pred, mask_y) 
             mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels

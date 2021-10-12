@@ -30,7 +30,7 @@ writer = None
 config = None
 avg_tokens = 16  # from ERASER paper
 max_tokens = 113  # assume all sequences ≤ 113 tokens (correct for esnli)
-label_fns = [higher_conf]
+label_fns = []
 
 def parse_args():
     parser = argparse.ArgumentParser("Cotraining.")
@@ -203,7 +203,6 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
         "denied_labels": denied_labels
     }
     logger.info(overall_scalar_metrics)
-    exit(1)
 
     assert src_top_k_prob_mask.size(1) == len(src_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
     assert tgt_top_k_prob_mask.size(1) == len(tgt_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
@@ -288,7 +287,7 @@ def main():
     # best_cotrain_rate = 0
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
-        # TODO: only label with best models
+        # TODO: only label with best models - cur model takes awhile to adjust
         # augment train datasets with cotrain masks
         # cur_cotrain_rate = best_cotrain_rate + growth_rate
         src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args.cotrain_rate)
@@ -353,7 +352,6 @@ def main():
     test_scalar_metrics = {**src_test_scalar_metrics, **tgt_test_scalar_metrics}
     for tag, val in test_scalar_metrics.items(): 
         writer.add_scalar(tag, val)
-
     test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
     write_json(test_scalar_metrics, os.path.join(args.out_dir, "results.json"))
 

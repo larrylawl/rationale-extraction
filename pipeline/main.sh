@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_lite_fr
+dataset_name=esnli_lite
 exp_name=finetune
 data_dir=../data/esnli/$dataset_name
 config=../models/config.json
