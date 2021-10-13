@@ -55,7 +55,10 @@ def main():
     if args.tune_hp:
         config = tune_hp(config)
     assert 0 <= config["train"]["sup_pn"] <= 1
-    if args.gen_only: assert config["train"]["sup_pn"] > 0
+    if args.gen_only: 
+        assert config["train"]["sup_pn"] > 0
+        config["generator"]["selection_lambda"] = 0
+        config["generator"]["continuity_lambda"] = 0
     write_json(config, os.path.join(args.out_dir, "config.json"))
     config["encoder"]["num_classes"] = len(dataset_mapping)
 
@@ -86,10 +89,6 @@ def main():
     enc, gen = instantiate_models(config, device, args.model_dir)
     if args.gen_only: enc = None
 
-    # Note: no longer used
-    # for gradient flow tracking later
-    # layer_names = [n for n, _ in tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters()))]  
-
     # instantiate optimiser
     optimizer = get_optimizer([gen, enc], config["train"]["lr"])
     scheduler = ReduceLROnPlateau(optimizer, 'max', patience=2)
@@ -110,7 +109,6 @@ def main():
         for tag, val in overall_scalar_metrics.items():
             writer.add_scalar(tag, val, t)
         writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], t)
-        # plot_grad_flow(train_tensor_metrics["mean_grads"], train_tensor_metrics["var_grads"], layer_names, os.path.join(args.out_dir, f"model_grad_flow_{t}.png"))
         # del train_tensor_metrics
 
         # early stopping

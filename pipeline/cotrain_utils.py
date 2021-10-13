@@ -24,6 +24,7 @@ class EraserDataset(Dataset):
         self.embedding_model = embedding_model
         self.logger = logger
         self.cotrain_mask = cotrain_mask  # (max_tokens, N)
+        self.evd_ratio = 1.6 / 16  # for e-snli, according to ERASER paper
 
     def __len__(self):
         return len(self.anns)
@@ -51,7 +52,7 @@ def pad_collate(batch):
     # t_e_lens = [t.size()[0] for t in t_e]
 
     t_e_pad = pad_sequence(t_e)  # (L, bs, H_in)
-    r_pad = pad_sequence(r)
+    r_pad = pad_sequence(r, padding_value=-1.)  # -1 to not clash with 0, which reps not rationale
     # t_e_packed = pack_padded_sequence(t_e_pad, t_e_lens, enforce_sorted=False)
     # l = torch.tensor([dataset_mapping[x] for x in l], dtype=torch.long)
     l = torch.stack(l, dim = 0)  # (bs)
@@ -92,7 +93,11 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
         if batch in label_batch_idx: 
-            mask_sup_loss = nn.BCELoss()(mask, r_pad)
+            weight = r_pad.clone()
+            weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
+            weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
+            weight[weight == -1] = 0  # padding values
+            mask_sup_loss = nn.BCELoss(weight)(mask, r_pad)
         elif not c_mask[0] == None:
             # only apply BCE on nonzero values of cotrain mask
             mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)] # (L, bs)
@@ -116,7 +121,6 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
             obj_loss = torch.tensor(0)
             f1 = 0
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
-        print(f"mask_sup_loss: {mask_sup_loss}")
 
         # Backpropagation
         optimizer.zero_grad()
