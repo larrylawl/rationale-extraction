@@ -61,6 +61,7 @@ def translate_tokens(algn, start_tkn, end_tkn, src="", tgt="", src_ann=""):
 
 if __name__ == "__main__":
     args = parse_args()
+    raise NotImplementedError("results worsened when I fixed the translate tokens... not too sure. might be better to use the old translate tokens")
     # if os.path.exists(args.op_dir): shutil.rmtree(args.op_dir)
     # os.makedirs(args.op_dir)
     # load parallel corpus as dict

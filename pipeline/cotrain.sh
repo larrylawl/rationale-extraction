@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_lightest
+dataset_name=esnli_20k
 exp_name=toy_exp
 
 src_data_dir=../data/esnli/$dataset_name
-tgt_data_dir=../data/esnli/${dataset_name}_fr_fixed
+tgt_data_dir=../data/esnli/${dataset_name}_fr
 src_model_dir=../out/esnli_20k/gen_only/partial_sup_only/0
 tgt_model_dir=../out/esnli_20k_fr/gen_only/partial_sup_only/0
 config=../models/config.json
@@ -20,8 +20,8 @@ for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
         --tgt_model_dir $tgt_model_dir \
         --config $config \
         --out_dir $out_dir/$i \
-        --seed $(( 100 + $i )) \
-        --cotrain_rate $cotrain_rate
+        --seed $(( 100 + $i ))
+        # --cotrain_rate $cotrain_rate
         # --cotrain_perfect 
         # --tune_hp
 done

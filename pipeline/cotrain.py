@@ -1,4 +1,5 @@
 import sys; sys.path.insert(0, "..")
+from copy import deepcopy
 import os
 import time
 import math
@@ -19,7 +20,7 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 
 from pipeline.cotrain_utils import *
-from utils import get_top_k_prob_mask, higher_conf, instantiate_models, load_datasets, create_instance, load_documents, load_id_jsonl_as_dict, get_optimizer, parse_alignment, prob_to_conf, read_json, same_label, top_k_idxs_multid, write_json, add_offsets
+from utils import get_top_k_prob_mask, higher_conf, instantiate_generator, instantiate_models, load_datasets, create_instance, load_documents, load_id_jsonl_as_dict, get_optimizer, parse_alignment, prob_to_conf, read_json, same_label, top_k_idxs_multid, write_json, add_offsets
 from models.encoder import Encoder
 from models.generator import Generator
 
@@ -185,46 +186,32 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
         for v in src_wa[tkn_idx.item()]:  # implicitly asserts tkn in alignment
             src_label = src_r_mask[tkn_idx, ann_idx]
             tgt_label = tgt_r_mask[v, ann_idx]
-            if src_label != tgt_label:   # alignment tool error
-                continue
-
             src_prob = src_top_k_prob_mask[tkn_idx, ann_idx]
-            tgt_prob = tgt_top_k_prob_mask[v, ann_idx]
-            tgt_no_label = tgt_prob == -1
+            tgt_prob = tgt_prob_mask[v, ann_idx]  # NOTE: not top_k to emphasise on easier examples
+            tgt_has_label = tgt_top_k_prob_mask[v, ann_idx] != -1
 
-            if tgt_no_label or label(src_prob, tgt_prob, label_fns):
-                tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
-                success_labels += 1
-            else:
+            if (src_label != tgt_label) or (tgt_has_label and not label(src_prob, tgt_prob, label_fns)):
+                src_top_k_prob_mask[tkn_idx, ann_idx] = -1
                 denied_labels += 1
-
-            # if src_label == tgt_label: 
-            #     tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
-            # else: 
-            #     conflicting_labels += 1            
+            else: 
+                tgt_top_k_prob_mask[v, ann_idx] = src_prob
+                success_labels += 1       
 
     for tkn_idx, ann_idx in tgt_idxs:
         tgt_wa = tgt_train_dataset.anns[ann_idx].alignment
         for v in tgt_wa[tkn_idx.item()]: 
-            src_label = src_r_mask[v, ann_idx]
             tgt_label = tgt_r_mask[tkn_idx, ann_idx]
-            if src_label != tgt_label: continue
-
+            src_label = src_r_mask[v, ann_idx]
             tgt_prob = tgt_top_k_prob_mask[tkn_idx, ann_idx]
-            src_prob = src_top_k_prob_mask[v, ann_idx]
-            src_no_label = src_top_k_prob_mask[v, ann_idx] == -1
+            src_prob = src_prob_mask[v, ann_idx]
+            src_has_label = src_top_k_prob_mask[v, ann_idx] != -1
 
-            if src_no_label or label(tgt_prob, src_prob, label_fns):
-                src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
-                success_labels += 1
-            else:
+            if (src_label != tgt_label) or (src_has_label and not label(tgt_prob, src_prob, label_fns)):
+                tgt_top_k_prob_mask[tkn_idx, ann_idx] = -1  # skip self-supervising own labels that are problematic
                 denied_labels += 1
-
-            # src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
-            # if src_label == tgt_label: 
-            #     src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
-            # else: 
-            #     conflicting_labels += 1
+            else:
+                src_top_k_prob_mask[v, ann_idx] = tgt_prob
+                success_labels += 1
     
     src_top_k_pred = (src_top_k_prob_mask[src_top_k_prob_mask != -1] > 0.5).float()
     src_p, src_r, src_f1 = PRFScore(average="binary")(src_r_mask[src_top_k_prob_mask != -1], src_top_k_pred)
@@ -234,7 +221,7 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     overall_scalar_metrics = {
         "src_top_k_p": src_p, "src_top_k_r": src_r, "src_top_k_f1": src_f1,
         "tgt_top_k_p": tgt_p, "tgt_top_k_r": tgt_r, "tgt_top_k_f1": tgt_f1,
-        "denied_labels": denied_labels, "success_labels_pn": success_labels / (len(src_idxs) + len(tgt_idxs))
+        "denied_labels": denied_labels / (len(src_idxs) + len(tgt_idxs)), "success_labels_pn": success_labels / (len(src_idxs) + len(tgt_idxs))
     }
     logger.info(overall_scalar_metrics)
 
@@ -301,10 +288,8 @@ def main():
     tgt_test_dataloader = DataLoader(tgt_test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     
     # instantiate models
-    src_gen = Generator(config["generator"]).to(device)
-    src_gen.load_state_dict(torch.load(os.path.join(args.src_model_dir, "best_gen_weights.pth")))
-    tgt_gen = Generator(config["generator"]).to(device)
-    tgt_gen.load_state_dict(torch.load(os.path.join(args.tgt_model_dir, "best_gen_weights.pth")))
+    src_gen = instantiate_generator(config, device, os.path.join(args.src_model_dir, "best_gen_weights.pth"))
+    tgt_gen = instantiate_generator(config, device, os.path.join(args.tgt_model_dir, "best_gen_weights.pth"))
 
 
     # instantiate optimiser
@@ -313,28 +298,28 @@ def main():
     tgt_optimizer = get_optimizer([tgt_gen], config["train"]["lr"])
     tgt_scheduler = ReduceLROnPlateau(tgt_optimizer, 'max', patience=2)
 
-    # TODO: cotrain early stopping
-    # src_val_metrics = read_json(os.path.join(args.src_model_dir, "results.json"))
-    # tgt_val_metrics = read_json(os.path.join(args.tgt_model_dir, "results.json"))
-    # best_val_target_metric = src_val_metrics["best_val_f1"] + src_val_metrics["best_val_tok_f1"] + tgt_val_metrics["best_val_f1"] + tgt_val_metrics["best_val_tok_f1"]
-    # growth_rate = args.cotrain_rate
-    # best_cotrain_rate = 0
-    
-    co_epochs = math.ceil((1 - config["train"]["sup_pn"]) / (args.cotrain_rate * 2))  # NOTE: *2 since both src and tgt will 
+
+    co_best_src_val_metrics = read_json(os.path.join(args.src_model_dir, "results.json"))
+    co_best_tgt_val_metrics = read_json(os.path.join(args.tgt_model_dir, "results.json"))
+    co_best_val_target_metric = co_best_src_val_metrics["best_val_f1"] + co_best_src_val_metrics["best_val_tok_f1"] + co_best_tgt_val_metrics["best_val_f1"] + co_best_tgt_val_metrics["best_val_tok_f1"]
+    co_best_src_gen_fp = os.path.join(args.src_model_dir, "best_gen_weights.pth")
+    co_best_tgt_gen_fp = os.path.join(args.tgt_model_dir, "best_gen_weights.pth")
+    co_epochs = math.ceil((1 - config["train"]["sup_pn"]) / (args.cotrain_rate * 2))  # NOTE: *2 since combining both src and tgt labels
     co_es_count = 0
+    co_writer = SummaryWriter(args.out_dir)
     for co_t in range(co_epochs):
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
-        # TODO: only label with best models - cur model takes awhile to adjust
+        # use best generators to label. NOTE: best generator not necessarily == cur generator
+        best_src_gen = instantiate_generator(config, device, co_best_src_gen_fp)
+        best_tgt_gen = instantiate_generator(config, device, co_best_tgt_gen_fp)
+
         # augment train datasets with cotrain masks
-        # cur_cotrain_rate = best_cotrain_rate + growth_rate
-        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args.cotrain_rate)
-        exit(1)
+        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args.cotrain_rate)
         src_train_dataloader = DataLoader(src_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
         tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
-        cotrain_writer = SummaryWriter(args.out_dir)
         for tag, val in cotrain_scalar_metrics.items():
-            cotrain_writer.add_scalar(tag, val, co_t)
+            co_writer.add_scalar(tag, val, co_t)
 
         # fine-tuning C_k 
         epochs = config["train"]["num_epochs"]
@@ -347,32 +332,32 @@ def main():
         for t_t in range(epochs):
             # vanilla training loops
             src_train_scalar_metrics, _ = train(src_train_dataloader, None, src_gen, src_optimizer, args, device, config)
-            src_val_scalar_metrics = test(src_val_dataloader, None, src_gen, device)
+            src_val_scalar_metrics = test(src_val_dataloader, None, src_gen, device, split="src_val")
             src_overall_scalar_metrics = {**src_train_scalar_metrics, **src_val_scalar_metrics}
             src_val_target_metric = src_overall_scalar_metrics["val_f1"] + src_overall_scalar_metrics["val_tok_f1"]
             src_scheduler.step(src_val_target_metric)
 
             tgt_train_scalar_metrics, _ = train(tgt_train_dataloader, None, tgt_gen, tgt_optimizer, args, device, config)
-            tgt_val_scalar_metrics = test(tgt_val_dataloader, None, tgt_gen, device)
+            tgt_val_scalar_metrics = test(tgt_val_dataloader, None, tgt_gen, device, split="tgt_val")
             tgt_overall_scalar_metrics = {**tgt_train_scalar_metrics, **tgt_val_scalar_metrics}
             tgt_val_target_metric = tgt_overall_scalar_metrics["val_f1"] + tgt_overall_scalar_metrics["val_tok_f1"]
             tgt_scheduler.step(tgt_val_target_metric)
 
             # logging metrics
             for tag, val in src_overall_scalar_metrics.items():
-                train_writer.add_scalar(f"src_{tag}", val, t_t)
+                train_writer.add_scalar(tag, val, t_t)
             train_writer.add_scalar('learning_rate', src_optimizer.param_groups[0]['lr'], t_t)
             for tag, val in tgt_overall_scalar_metrics.items():
-                train_writer.add_scalar(f"tgt_{tag}", val, t_t)
+                train_writer.add_scalar(tag, val, t_t)
             train_writer.add_scalar('learning_rate', tgt_optimizer.param_groups[0]['lr'], t_t)
 
             # saving best models
             if src_val_target_metric > best_src_target_metric: 
                 best_src_target_metric = src_val_target_metric
-                torch.save(src_gen.state_dict(), os.path.join(args.out_dir, str(t_t), "best_src_gen_weights.pth"))
+                torch.save(src_gen.state_dict(), os.path.join(args.out_dir, str(co_t), "best_src_gen_weights.pth"))
             if tgt_val_target_metric > best_tgt_target_metric:
                 best_tgt_target_metric = tgt_val_target_metric
-                torch.save(tgt_gen.state_dict(), os.path.join(args.out_dir, str(t_t), "best_tgt_gen_weights.pth"))
+                torch.save(tgt_gen.state_dict(), os.path.join(args.out_dir, str(co_t), "best_tgt_gen_weights.pth"))
 
             val_target_metric = src_val_target_metric + tgt_val_target_metric
             # early stopping
@@ -381,22 +366,44 @@ def main():
                 es_count = 0
             else: 
                 es_count += 1
-                if es_count >= config["train"]["patience"]: 
+                if es_count >= args.cotrain_patience:
                     logger.info("Early stopping!")
                     break
-                
+
                 
         logger.info("Done training!")
-        logger.info("Evaluating best model on test set")
-        src_gen.load_state_dict(torch.load(os.path.join(args.out_dir, str(t_t), "best_src_gen_weights.pth")))
-        tgt_gen.load_state_dict(torch.load(os.path.join(args.out_dir, str(t_t), "best_tgt_gen_weights.pth")))
-        src_test_scalar_metrics = test(src_test_dataloader, None, src_gen, device, split="src_test")
-        tgt_test_scalar_metrics = test(tgt_test_dataloader, None, tgt_gen, device, split="tgt_test")
-        test_scalar_metrics = {**src_test_scalar_metrics, **tgt_test_scalar_metrics}
-        for tag, val in test_scalar_metrics.items(): 
-            train_writer.add_scalar(tag, val)
-        test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
-        write_json(test_scalar_metrics, os.path.join(args.out_dir, str(co_t), "results.json"))
+        src_gen.load_state_dict(torch.load(os.path.join(args.out_dir, str(co_t), "best_src_gen_weights.pth")))
+        tgt_gen.load_state_dict(torch.load(os.path.join(args.out_dir, str(co_t), "best_tgt_gen_weights.pth")))
+
+        # saving best models
+        if best_src_target_metric > co_best_src_val_metrics: 
+            co_best_src_val_metrics = best_src_target_metric
+            best_src_gen.load_state_dict(torch.load(os.path.join(args.out_dir, str(co_t), "best_src_gen_weights.pth")))
+        if best_tgt_target_metric > co_best_tgt_val_metrics:
+            co_best_tgt_val_metrics = best_tgt_target_metric
+            best_tgt_gen.load_state_dict(torch.load(os.path.join(args.out_dir, str(co_t), "best_tgt_gen_weights.pth")))
+        
+        # co-train early stopping
+        val_target_metric = best_src_target_metric + best_tgt_target_metric
+        if val_target_metric > co_best_val_target_metric: 
+            co_best_val_target_metric = val_target_metric
+            co_es_count = 0
+        else:
+            co_es_count += 1
+            if co_es_count >= args.cotrain_patience:
+                logger.info("Early stopping co-training!")
+                break
+        train_writer.close()
+    
+
+
+    co_src_test_scalar_metrics = test(src_test_dataloader, None, best_src_gen, device, split="src_test")
+    co_tgt_test_scalar_metrics = test(tgt_test_dataloader, None, best_tgt_gen, device, split="tgt_test")
+    co_test_scalar_metrics = {**co_src_test_scalar_metrics, **co_tgt_test_scalar_metrics}
+    for tag, val in co_test_scalar_metrics.items(): 
+        co_writer.add_scalar(tag, val)
+    co_test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
+    write_json(co_test_scalar_metrics, os.path.join(args.out_dir, str(co_t), "results.json"))
 
 if __name__ == "__main__":
     main()
