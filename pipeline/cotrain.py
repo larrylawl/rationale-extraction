@@ -31,7 +31,7 @@ device = None
 config = None
 avg_tokens = 16  # from ERASER paper
 max_tokens = 113  # assume all sequences ≤ 113 tokens (correct for esnli)
-label_fns = []
+label_fns = [same_label, higher_conf]  # same_label, higher_conf
 
 def parse_args():
     parser = argparse.ArgumentParser("Cotraining.")
@@ -68,10 +68,31 @@ def add_wa_to_anns(src_train_anns, tgt_train_anns, src_was, tgt_was, src_documen
         src_ann.alignment = {**src_doc_h_wa, **add_offsets(src_doc_p_wa, src_offset, tgt_offset)}
         tgt_ann.alignment = {**tgt_doc_h_wa, **add_offsets(tgt_doc_p_wa, tgt_offset, src_offset)}
 
+        # assert alignments match rationales (i.e. align tokens with different labels)
+        src_doc_r = src_ann.rationale
+        tgt_doc_r = tgt_ann.rationale
+        for k, vs in src_ann.alignment.items(): 
+            for v in vs:
+                # assert torch.equal(src_doc_r[k], tgt_doc_r[v]), f"Labels should be the same! {src_doc_r[k], tgt_doc_r[v]}"
+                if not torch.equal(src_doc_r[k], tgt_doc_r[v]): 
+                    print(src_ann.annotation_id)
+                    print(f"idx wrong: {k}, {v}")
+                    print(src_ann.alignment)
+                    print(src_doc_r)
+                    print(tgt_doc_r)
+                    print(f"Labels should be the same! {src_doc_r[k], tgt_doc_r[v]}")
+                    exit(1)
+        for k, vs in tgt_ann.alignment.items(): 
+            for v in vs:
+                # assert torch.equal(tgt_doc_r[k], src_doc_r[v]), f"Labels should be the same! {tgt_doc_r[k]} != {src_doc_r[v]}"
+                if not torch.equal(tgt_doc_r[k], src_doc_r[v]): print(f"Labels should be the same! {tgt_doc_r[k]} != {src_doc_r[v]}")
+
+    exit(1)
     return src_train_anns, tgt_train_anns
 
 def get_algn_mask(anns):
-    """ (i, j) indicates if the ith token of jth annotation has an alignment. """
+    """ (i, j) indicates if the ith token of jth annotation has an alignment. 
+    """
 
     algn_mask = torch.zeros(max_tokens, len(anns))
     for i, ann in enumerate(anns):
@@ -103,7 +124,7 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, r):
             t_e_lens[is_l == 1] = 0
 
             prob_mask[:, batch*bs:(batch+1)*bs] = F.pad(mask.T, (0, max_tokens - len(mask)), value=0.5).T # (max_tokens, bs), pad to max_tokens
-            r_mask[:, batch*bs:(batch+1)*bs] = F.pad(r_pad.T, (0, max_tokens - len(r_pad)), value=0.5).T # (max_tokens, bs)
+            r_mask[:, batch*bs:(batch+1)*bs] = F.pad(r_pad.T, (0, max_tokens - len(r_pad))).T # (max_tokens, bs)
 
             mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
             tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens, average="micro")  # micro for valid comparison with top k scores
@@ -159,6 +180,8 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     src_idxs = (src_top_k_prob_mask + 1).nonzero()
     tgt_idxs = (tgt_top_k_prob_mask + 1).nonzero()
     denied_labels = 0
+    success_labels = 0
+    alignment_error = 0
     for tkn_idx, ann_idx in src_idxs:
         src_wa = src_train_dataset.anns[ann_idx].alignment
         for v in src_wa[tkn_idx.item()]:  # implicitly asserts tkn in alignment
@@ -166,10 +189,14 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
             tgt_prob = tgt_top_k_prob_mask[v, ann_idx]
             tgt_no_label = tgt_prob == -1
 
-            # NOTE: when you only label same labels, it won't change score since labels remain
             if tgt_no_label or label(src_prob, tgt_prob, label_fns):
-                # print('inside')
                 tgt_top_k_prob_mask[v, ann_idx] = src_top_k_prob_mask[tkn_idx, ann_idx]
+                success_labels += 1
+                
+                src_label = src_r_mask[tkn_idx, ann_idx]
+                tgt_label = tgt_r_mask[v, ann_idx]
+                if src_label != tgt_label: 
+                    alignment_error += 1
             else:
                 denied_labels += 1
 
@@ -187,6 +214,11 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
 
             if src_no_label or label(tgt_prob, src_prob, label_fns):
                 src_top_k_prob_mask[v, ann_idx] = tgt_top_k_prob_mask[tkn_idx, ann_idx]
+                success_labels += 1
+
+                src_label = src_r_mask[v, ann_idx]
+                tgt_label = tgt_r_mask[tkn_idx, ann_idx]
+                if src_label != tgt_label: alignment_error += 1
             else:
                 denied_labels += 1
 
@@ -204,7 +236,8 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     overall_scalar_metrics = {
         "src_top_k_p": src_p, "src_top_k_r": src_r, "src_top_k_f1": src_f1,
         "tgt_top_k_p": tgt_p, "tgt_top_k_r": tgt_r, "tgt_top_k_f1": tgt_f1,
-        "denied_labels": denied_labels
+        "denied_labels": denied_labels, "success_labels_pn": success_labels / (len(src_idxs) + len(tgt_idxs)),
+        "alignment_error_pn": alignment_error / (len(src_idxs) + len(tgt_idxs))
     }
     logger.info(overall_scalar_metrics)
 
@@ -236,7 +269,8 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(config["embedding_model_name"])
     embedding_model = AutoModel.from_pretrained(config["embedding_model_name"], output_hidden_states=True)
-    device = torch.device("cpu") if not torch.cuda.is_available() else torch.device("cuda")
+    device = 'cpu'
+    # device = torch.device("cpu") if not torch.cuda.is_available() else torch.device("cuda")
     embedding_model.to(device)
     embedding_model.eval()  # only extracting pre-trained embeddings
 
@@ -290,7 +324,7 @@ def main():
     # growth_rate = args.cotrain_rate
     # best_cotrain_rate = 0
     
-    co_epochs = math.floor((1 - config["train"]["sup_pn"]) / args.cotrain_rate)
+    co_epochs = math.ceil((1 - config["train"]["sup_pn"]) / (args.cotrain_rate * 2))  # NOTE: *2 since both src and tgt will 
     co_es_count = 0
     for co_t in range(co_epochs):
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
