@@ -10,7 +10,7 @@ src_model_dir=../out/esnli_lite/sup_pn/1
 tgt_model_dir=../out/esnli_lite_fr/sup_pn/1
 config=../models/config.json
 out_dir=../out/$dataset_name/$exp_name
-cotrain_rate=1
+cotrain_rate=0.5
 repeat=1
 
 for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)

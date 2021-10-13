@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_lightest
-exp_name=toy_exp
+dataset_name=esnli_20k
+exp_name=gen_only/partial_sup_only
 data_dir=../data/esnli/$dataset_name
 config=../models/config.json
 out_dir=../out/$dataset_name/$exp_name

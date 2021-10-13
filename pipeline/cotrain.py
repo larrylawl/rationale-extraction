@@ -97,19 +97,18 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, r):
         for batch, (t_e_pad, t_e_lens, r_pad, _, ann_ids, _, is_l) in enumerate(tqdm(dataloader)): 
             mask = gen(t_e_pad, t_e_lens)  # (L, bs)
             assert mask.size() == r_pad.size()
+            # excluding rationales which are labelled
+            mask[:, is_l == 1] = 0.51  # 0.51 instead of 0.50 so that it's selected over tokens with no alignment
+            t_e_lens[is_l == 1] = 0
+
             prob_mask[:, batch*bs:(batch+1)*bs] = F.pad(mask.T, (0, max_tokens - len(mask)), value=0.5).T # (max_tokens, bs), pad to max_tokens
             r_mask[:, batch*bs:(batch+1)*bs] = F.pad(r_pad.T, (0, max_tokens - len(r_pad)), value=0.5).T # (max_tokens, bs)
-
-            # excluding rationales which are labelled
-            prob_mask[: is_l == 1] = 0.5
-            t_e_lens[is_l == 1] = 0
 
             mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
             tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens, average="micro")  # micro for valid comparison with top k scores
             running_scalar_metrics += torch.tensor([tok_p, tok_r, tok_f1])
 
         # label top k% of most confident tokens
-        # TODO: exclude is_labelled
         prob_mask_dup = prob_mask.clone()
         prob_mask_dup[algn_mask == 0] = 0.5 # ensure that tokens with no alignment (including padding) are not selected
 
@@ -258,7 +257,7 @@ def main():
     tgt_algn_mask = get_algn_mask(tgt_train_feat)
 
     # create train dataloader later
-    src_train_dataset = EraserDataset(src_train_feat, tokenizer, embedding_model, config["train"]["sup_pn"])
+    src_train_dataset = EraserDataset(src_train_feat, tokenizer, embedding_model, config["train"]["sup_pn"])  # NOTE: need to indicate which are sup since we'll be labelling other examples too
     src_val_dataset = EraserDataset(src_val_feat, tokenizer, embedding_model)
     src_test_dataset = EraserDataset(src_test_feat, tokenizer, embedding_model)
     src_val_dataloader = DataLoader(src_val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)

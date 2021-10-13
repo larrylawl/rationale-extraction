@@ -15,7 +15,7 @@ from transformers import AutoTokenizer, AutoModel
 import random
 
 from pipeline.cotrain_utils import *
-from utils import instantiate_models, load_datasets, load_documents, load_instances, get_optimizer, read_json, write_json, plot_grad_flow, tracked_named_parameters, score_hard_rationale_predictions
+from utils import instantiate_models, load_datasets, load_documents, load_instances, get_optimizer, read_json, slice_by_index, write_json, plot_grad_flow, tracked_named_parameters, score_hard_rationale_predictions
 
 logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadName)s %(message)s')
 # let's make this more or less deterministic (not resistent to restarts)
@@ -74,11 +74,17 @@ def main():
     # setting up data
     documents: Dict[str, str] = load_documents(args.data_dir, docids=None)
     # train_anns, val_anns, test_anns = load_datasets(args.data_dir)
-    train_feat, val_feat, test_feat = create_datasets_features(load_datasets(args.data_dir), documents, device)
+    # NOTE: can toggle --gen_only here if i need full retraining with partial supervision.
+    train_anns, val_anns, test_anns = load_datasets(args.data_dir)
+    label_size = math.ceil(config["train"]["sup_pn"] * len(train_anns))
+    label_idxs = set(random.sample(range(len(train_anns)), label_size))
+    train_anns = slice_by_index(train_anns, label_idxs)
+    train_feat, val_feat, test_feat = create_datasets_features([train_anns, val_anns, test_anns], documents, device)
+
 
     # TODO: change to tensor dataset to avoid expensive zipping operation of pad_collate
     # create datset
-    train_dataset = EraserDataset(train_feat, tokenizer, embedding_model, config["train"]["sup_pn"])
+    train_dataset = EraserDataset(train_feat, tokenizer, embedding_model)
     val_dataset = EraserDataset(val_feat, tokenizer, embedding_model)
     test_dataset = EraserDataset(test_feat, tokenizer, embedding_model)
 

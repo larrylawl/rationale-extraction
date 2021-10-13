@@ -59,6 +59,7 @@ def pad_collate(batch):
     r_pad = pad_sequence(r, padding_value=-1.)  # -1 to not clash with 0, which reps not rationale
     # t_e_packed = pack_padded_sequence(t_e_pad, t_e_lens, enforce_sorted=False)
     # l = torch.tensor([dataset_mapping[x] for x in l], dtype=torch.long)
+    t_e_lens = torch.tensor(t_e_lens)
     l = torch.stack(l, dim = 0)  # (bs)
     if c_mask[0] != None: c_mask = torch.stack(c_mask, dim = 1)
     is_l = torch.tensor(is_l)  # (bs)
@@ -75,11 +76,9 @@ def tune_hp(config):
     return config
 
 def train(dataloader, enc, gen, optimizer, args, device, config):
-    running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_cont_loss", "trg_sel_loss", "trg_mask_sup_loss", "trg_total_f1", "trg_tok_precision", "trg_tok_recall", "trg_tok_f1"]
+    running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_cont_loss", "trg_sel_loss", "trg_mask_sup_loss", "trg_cotrain_sup_loss", "trg_total_f1", "trg_tok_p", "trg_tok_r", "trg_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
-    # total_params = len(tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters())))
-    # mean_grads = torch.zeros(total_params).to(device)
-    # var_grads = torch.zeros(total_params).to(device)
+    skipped_count = 0
 
     gen.train()
     if enc is not None: enc.train()
@@ -88,9 +87,21 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
         mask = gen(t_e_pad, t_e_lens)
         # hard yet differentiable by using the same trick as https://pytorch.org/docs/stable/generated/torch.nn.functional.gumbel_softmax.html#
         mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
+        
+        # encoder
+        if enc is not None:
+            logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
+            probs = nn.Softmax(dim=1)(logit.detach())
+            y_pred = torch.argmax(probs, dim=1)
+
+            obj_loss = nn.CrossEntropyLoss()(logit, l)
+            _, _, f1 = PRFScore(average="macro")(l.detach(), y_pred)
+        else:
+            obj_loss = torch.tensor(0)
+            f1 = 0
+
         # NOTE: training metrics won't be accurate as only supervised and cotrained idxs are labelled
-        # tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
-        tok_p = tok_r = tok_f1 = 0  
+        tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
         # compute losses
         ## sel and cont loss
@@ -110,32 +121,26 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
 
         ## cotrain rationale loss
         if not c_mask[0] == None:
-            # TODO: i don't think mask_pred is (L, bs)
-            # TODO: ignore already labelled rationales AND manual averaging
+            # TODO: try scaling confidence to quadratic x^2
+            # NOTE: c_mask naturally won't select supervised labels
             # only apply BCE on nonzero values of cotrain mask
-            mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)] # (L, bs) 
-            print(mask_pred.size())
-            exit(1)
-            mask_y_prob = c_mask[c_mask != -1] # (max_tokens, bs)  # TODO: change to confidence
+            mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)]  # dim == 1
+            mask_y_prob = c_mask[c_mask != -1] # dim == 1 
             mask_y_conf = prob_to_conf(mask_y_prob)
             mask_y = (mask_y_prob > 0.5).float()
-            mask_sup_loss = nn.BCELoss(mask_y_conf)(mask_pred, mask_y) 
-            mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
+            weight = mask_y_conf * torch.where(mask_y == 1, 1 - dataloader.dataset.evd_ratio, dataloader.dataset.evd_ratio)
+            cotrain_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) 
+            cotrain_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
+            print(cotrain_sup_loss)
+            exit(1)
             # print(f"mask_sup_loss: {mask_sup_loss}")
-        else: mask_sup_loss = torch.tensor(0)
+        else: cotrain_sup_loss = torch.tensor(0)
 
-        # encoder
-        if enc is not None:
-            logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
-            probs = nn.Softmax(dim=1)(logit.detach())
-            y_pred = torch.argmax(probs, dim=1)
+        loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss + cotrain_sup_loss
 
-            obj_loss = nn.CrossEntropyLoss()(logit, l)
-            _, _, f1 = PRFScore(average="macro")(l.detach(), y_pred)
-        else:
-            obj_loss = torch.tensor(0)
-            f1 = 0
-        loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
+        if loss.item() == 0: 
+            skipped_count += 1
+            continue  # not all batches have labels
 
         # Backpropagation
         optimizer.zero_grad()
@@ -143,9 +148,9 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
         optimizer.step()
 
         # tracking metrics
-        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), continuity_cost.detach(), selection_cost.detach(), mask_sup_loss.detach(), f1, tok_p, tok_r, tok_f1])            
+        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), continuity_cost.detach(), selection_cost.detach(), mask_sup_loss.detach(), cotrain_sup_loss.detach(), f1, tok_p, tok_r, tok_f1])            
 
-    total_scalar_metrics = running_scalar_metrics / (batch + 1)
+    total_scalar_metrics = running_scalar_metrics / ((batch + 1) - skipped_count)
     scalar_metrics = {}
     for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i]
 
