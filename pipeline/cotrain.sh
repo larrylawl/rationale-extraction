@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_lite
-exp_name=cotrain/perfect_1_weight_fix
+dataset_name=esnli_lightest
+exp_name=toy_exp
 
 src_data_dir=../data/esnli/$dataset_name
 tgt_data_dir=../data/esnli/${dataset_name}_fr

@@ -552,6 +552,7 @@ def get_optimizer(models, lr=1e-3):
     '''
     params = []
     for model in models:
+        if model is None: continue
         params.extend([param for param in model.parameters() if param.requires_grad])
     return torch.optim.Adam(params, lr=lr)
 
@@ -675,11 +676,12 @@ def add_offsets(wa: Dict[int, List[int]], key_offset, val_offset):
         res[k + key_offset] = [x+val_offset for x in v]
     return res
 
-def instantiate_models(config, device, enc_weights_fp=None, gen_weights_fp=None):
+def instantiate_models(config, device, model_dir=None):
     enc = Encoder(config["encoder"]).to(device)
     gen = Generator(config["generator"]).to(device)
-    if enc_weights_fp: enc.load_state_dict(torch.load(enc_weights_fp))
-    if gen_weights_fp: gen.load_state_dict(torch.load(gen_weights_fp))
+    if model_dir: 
+        enc.load_state_dict(torch.load(os.path.join(model_dir, "best_enc_weights.pth")))
+        gen.load_state_dict(torch.load(os.path.join(model_dir, "best_gen_weights.pth")))
     return enc, gen
 
 class PRFScore:

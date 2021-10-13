@@ -18,13 +18,16 @@ from utils import PRFScore, create_instance, get_token_embeddings, higher_conf, 
 class EraserDataset(Dataset):
     """ ERASER dataset. """
 
-    def __init__(self, anns, tokenizer, embedding_model, logger, cotrain_mask=None):
+    def __init__(self, anns, tokenizer, embedding_model, sup_pn=1, cotrain_mask=None):
         self.anns: AnnotationFeature = anns
         self.tokenizer = tokenizer
         self.embedding_model = embedding_model
-        self.logger = logger
         self.cotrain_mask = cotrain_mask  # (max_tokens, N)
         self.evd_ratio = 1.6 / 16  # for e-snli, according to ERASER paper
+        self.sup_pn = sup_pn
+        
+        self.label_size = math.ceil(sup_pn * len(anns))
+        self.label_idxs = set(random.sample(range(len(anns)), self.label_size))
 
     def __len__(self):
         return len(self.anns)
@@ -35,7 +38,8 @@ class EraserDataset(Dataset):
         assert len(t_e) == len(r)
         # t_e, r, l, ann_id = create_instance(self.anns[idx], self.docs, self.tokenizer, self.embedding_model, self.logger)
         c_mask = self.cotrain_mask[:, idx] if not self.cotrain_mask is None else None
-        return t_e, len(t_e), r, l, ann_id, c_mask
+        is_l = 1 if idx in self.label_idxs else 0
+        return t_e, len(t_e), r, l, ann_id, c_mask, is_l
 
 @dataclass(eq=True)
 class AnnotationFeature:
@@ -48,7 +52,7 @@ class AnnotationFeature:
 def pad_collate(batch):
     # print(len(batch))
     # print(type(batch))
-    (t_e, t_e_lens, r, l, ann_ids, c_mask) = zip(*batch)
+    (t_e, t_e_lens, r, l, ann_ids, c_mask, is_l) = zip(*batch)
     # t_e_lens = [t.size()[0] for t in t_e]
 
     t_e_pad = pad_sequence(t_e)  # (L, bs, H_in)
@@ -57,8 +61,9 @@ def pad_collate(batch):
     # l = torch.tensor([dataset_mapping[x] for x in l], dtype=torch.long)
     l = torch.stack(l, dim = 0)  # (bs)
     if c_mask[0] != None: c_mask = torch.stack(c_mask, dim = 1)
+    is_l = torch.tensor(is_l)  # (bs)
 
-    return t_e_pad, t_e_lens, r_pad, l, ann_ids, c_mask
+    return t_e_pad, t_e_lens, r_pad, l, ann_ids, c_mask, is_l
 
 def tune_hp(config):
     # config["generator"]["selection_lambda"] = round(10 ** random.uniform(-4, -2), 5)
@@ -78,29 +83,39 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
 
     gen.train()
     if enc is not None: enc.train()
-    label_size = config["train"]["sup_pn"] * len(dataloader.dataset)
-    label_batch_size = math.ceil(label_size / dataloader.batch_size)
-    label_batch_idx = set(random.sample(range(len(dataloader)), label_batch_size))
-    # labelled_batch_idx = random.sample(range(len(dataloader)), )
-
-    for batch, (t_e_pad, t_e_lens, r_pad, l, _, c_mask) in enumerate(tqdm(dataloader)):  
+    for batch, (t_e_pad, t_e_lens, r_pad, l, _, c_mask, is_l) in enumerate(tqdm(dataloader)):  
         # forward pass
         mask = gen(t_e_pad, t_e_lens)
         # hard yet differentiable by using the same trick as https://pytorch.org/docs/stable/generated/torch.nn.functional.gumbel_softmax.html#
         mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
-        tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
+        # NOTE: training metrics won't be accurate as only supervised and cotrained idxs are labelled
+        # tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
+        tok_p = tok_r = tok_f1 = 0  
 
         # compute losses
+        ## sel and cont loss
         selection_cost, continuity_cost = gen.loss(mask)
-        if batch in label_batch_idx: 
-            weight = r_pad.clone()
-            weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
-            weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
-            weight[weight == -1] = 0  # padding values
-            mask_sup_loss = nn.BCELoss(weight)(mask, r_pad)
-        elif not c_mask[0] == None:
+
+        ## sup rationale loss
+        weight = r_pad.clone()
+        weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
+        weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
+        weight[weight == -1] = 0  # padding values
+        weight[:, is_l == 0] = 0  # zero out non labels
+        mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average
+        mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no labels
+        # print(f"loss: {nn.BCELoss(weight, reduction='sum')(mask, r_pad)}")
+        # print(torch.count_nonzero(weight))
+        # print(f"mask_sup_loss: {mask_sup_loss}")
+
+        ## cotrain rationale loss
+        if not c_mask[0] == None:
+            # TODO: i don't think mask_pred is (L, bs)
+            # TODO: ignore already labelled rationales AND manual averaging
             # only apply BCE on nonzero values of cotrain mask
-            mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)] # (L, bs)
+            mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)] # (L, bs) 
+            print(mask_pred.size())
+            exit(1)
             mask_y_prob = c_mask[c_mask != -1] # (max_tokens, bs)  # TODO: change to confidence
             mask_y_conf = prob_to_conf(mask_y_prob)
             mask_y = (mask_y_prob > 0.5).float()
@@ -137,15 +152,20 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
     return scalar_metrics, _
 
 def test(dataloader, enc, gen, device, split="val"):
-    running_scalar_labels = [f"{split}_f1", f"{split}_tok_precision", f"{split}_tok_recall", f"{split}_tok_f1"]
+    running_scalar_labels = [f"{split}_f1", f"{split}_tok_precision", f"{split}_tok_recall", f"{split}_tok_f1", f"{split}_mask_sup_loss"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     
     gen.eval()
     if enc is not None: enc.eval()
     with torch.no_grad():
-        for batch, (t_e_pad, t_e_lens, r_pad, l, _, _) in enumerate(tqdm(dataloader)):        
+        for batch, (t_e_pad, t_e_lens, r_pad, l, _, _, _) in enumerate(tqdm(dataloader)):        
             mask = gen(t_e_pad, t_e_lens)
             mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
+            weight = r_pad.clone()
+            weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
+            weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
+            weight[weight == -1] = 0  # padding values
+            mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average 
             tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
             if enc is not None:
@@ -156,7 +176,7 @@ def test(dataloader, enc, gen, device, split="val"):
             else:
                 f1 = torch.tensor(0)
 
-            running_scalar_metrics += torch.tensor([f1, tok_p, tok_r, tok_f1])
+            running_scalar_metrics += torch.tensor([f1, tok_p, tok_r, tok_f1, mask_sup_loss.detach()])
 
         total_scalar_metrics = running_scalar_metrics / (batch + 1)
         scalar_metrics = {}

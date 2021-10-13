@@ -76,10 +76,11 @@ def main():
     # train_anns, val_anns, test_anns = load_datasets(args.data_dir)
     train_feat, val_feat, test_feat = create_datasets_features(load_datasets(args.data_dir), documents, device)
 
+    # TODO: change to tensor dataset to avoid expensive zipping operation of pad_collate
     # create datset
-    train_dataset = EraserDataset(train_feat, tokenizer, embedding_model, logger)
-    val_dataset = EraserDataset(val_feat, tokenizer, embedding_model, logger)
-    test_dataset = EraserDataset(test_feat, tokenizer, embedding_model, logger)
+    train_dataset = EraserDataset(train_feat, tokenizer, embedding_model, config["train"]["sup_pn"])
+    val_dataset = EraserDataset(val_feat, tokenizer, embedding_model)
+    test_dataset = EraserDataset(test_feat, tokenizer, embedding_model)
 
     train_dataloader = DataLoader(train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     val_dataloader = DataLoader(val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
