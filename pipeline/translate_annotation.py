@@ -61,8 +61,8 @@ def translate_tokens(algn, start_tkn, end_tkn, src="", tgt="", src_ann=""):
 
 if __name__ == "__main__":
     args = parse_args()
-    if os.path.exists(args.op_dir): shutil.rmtree(args.op_dir)
-    os.makedirs(args.op_dir)
+    # if os.path.exists(args.op_dir): shutil.rmtree(args.op_dir)
+    # os.makedirs(args.op_dir)
     # load parallel corpus as dict
     src_dict = load_id_jsonl_as_dict(os.path.join(args.src_dir, "docs.jsonl"))
     tgt_dict = load_id_jsonl_as_dict(os.path.join(args.tgt_dir, "docs.jsonl"))

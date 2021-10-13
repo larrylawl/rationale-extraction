@@ -5,7 +5,7 @@ dataset_name=esnli_lightest
 exp_name=toy_exp
 
 src_data_dir=../data/esnli/$dataset_name
-tgt_data_dir=../data/esnli/${dataset_name}_fr
+tgt_data_dir=../data/esnli/${dataset_name}_fr_fixed
 src_model_dir=../out/esnli_20k/gen_only/partial_sup_only/0
 tgt_model_dir=../out/esnli_20k_fr/gen_only/partial_sup_only/0
 config=../models/config.json
