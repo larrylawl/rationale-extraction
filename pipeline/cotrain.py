@@ -267,8 +267,8 @@ def main():
     tgt_test_dataloader = DataLoader(tgt_test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     
     # instantiate models
-    src_enc, src_gen = instantiate_models(config, device, os.path.join(args.src_model_dir, "best_enc_weights.pth"), os.path.join(args.src_model_dir, "best_gen_weights.pth"))
-    tgt_enc, tgt_gen = instantiate_models(config, device, os.path.join(args.tgt_model_dir, "best_enc_weights.pth"), os.path.join(args.tgt_model_dir, "best_gen_weights.pth"))
+    src_enc, src_gen = instantiate_models(config, device, args.src_model_dir)
+    tgt_enc, tgt_gen = instantiate_models(config, device, args.tgt_model_dir)
 
     # instantiate optimiser
     src_optimizer = get_optimizer([src_gen, src_enc], config["train"]["lr"])

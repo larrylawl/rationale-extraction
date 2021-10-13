@@ -76,7 +76,7 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
     # var_grads = torch.zeros(total_params).to(device)
 
     gen.train()
-    enc.train()
+    if enc is not None: enc.train()
     label_size = config["train"]["sup_pn"] * len(dataloader.dataset)
     label_batch_size = math.ceil(label_size / dataloader.batch_size)
     label_batch_idx = set(random.sample(range(len(dataloader)), label_batch_size))
@@ -87,9 +87,7 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
         mask = gen(t_e_pad, t_e_lens)
         # hard yet differentiable by using the same trick as https://pytorch.org/docs/stable/generated/torch.nn.functional.gumbel_softmax.html#
         mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
-        logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
-        probs = nn.Softmax(dim=1)(logit.detach())
-        y_pred = torch.argmax(probs, dim=1)
+        tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
         # compute losses
         selection_cost, continuity_cost = gen.loss(mask)
@@ -105,11 +103,20 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
             mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
             # print(f"mask_sup_loss: {mask_sup_loss}")
         else: mask_sup_loss = torch.tensor(0)
-        obj_loss = nn.CrossEntropyLoss()(logit, l)
-        loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
 
-        _, _, f1 = PRFScore(average="macro")(l.detach(), y_pred)
-        tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
+        # encoder
+        if enc is not None:
+            logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
+            probs = nn.Softmax(dim=1)(logit.detach())
+            y_pred = torch.argmax(probs, dim=1)
+
+            obj_loss = nn.CrossEntropyLoss()(logit, l)
+            _, _, f1 = PRFScore(average="macro")(l.detach(), y_pred)
+        else:
+            obj_loss = torch.tensor(0)
+            f1 = 0
+        loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
+        print(f"mask_sup_loss: {mask_sup_loss}")
 
         # Backpropagation
         optimizer.zero_grad()
@@ -117,24 +124,12 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
         optimizer.step()
 
         # tracking metrics
-        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), continuity_cost.detach(), selection_cost.detach(), mask_sup_loss.detach(), f1, tok_p, tok_r, tok_f1])
-
-        # tracking gradients
-        # t_n_p = tracked_named_parameters(chain(gen.named_parameters(), enc.named_parameters()))
-        # for i, (_, p) in enumerate(t_n_p):
-        #     var, mean = torch.var_mean(p.grad.detach().abs())  # abs to ensure gradient's don't cancel out to wrongly indicate vanishing grad
-        #     mean_grads[i] += mean
-        #     var_grads[i] += var
-            
+        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), continuity_cost.detach(), selection_cost.detach(), mask_sup_loss.detach(), f1, tok_p, tok_r, tok_f1])            
 
     total_scalar_metrics = running_scalar_metrics / (batch + 1)
     scalar_metrics = {}
     for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i]
 
-    # tensor_metrics = {
-    #     "mean_grads": (mean_grads / (batch + 1)).cpu(),
-    #     "var_grads": (var_grads / (batch + 1)).cpu()
-    # }
     return scalar_metrics, _
 
 def test(dataloader, enc, gen, device, split="val"):
@@ -142,19 +137,20 @@ def test(dataloader, enc, gen, device, split="val"):
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     
     gen.eval()
-    enc.eval()
+    if enc is not None: enc.eval()
     with torch.no_grad():
         for batch, (t_e_pad, t_e_lens, r_pad, l, _, _) in enumerate(tqdm(dataloader)):        
-            r_pad = r_pad.to(device)
-            l = l.to(device)
-
             mask = gen(t_e_pad, t_e_lens)
             mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
-            logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
-            probs = nn.Softmax(dim=1)(logit.detach())
-            y_pred = torch.argmax(probs, dim=1)
-            _, _, f1 = PRFScore(average='macro')(l.detach(), y_pred)
             tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
+
+            if enc is not None:
+                logit = enc(t_e_pad, t_e_lens, mask=mask_hard)  # NOTE: to test gen and enc independently, change mask to none
+                probs = nn.Softmax(dim=1)(logit.detach())
+                y_pred = torch.argmax(probs, dim=1)
+                _, _, f1 = PRFScore(average='macro')(l.detach(), y_pred)
+            else:
+                f1 = torch.tensor(0)
 
             running_scalar_metrics += torch.tensor([f1, tok_p, tok_r, tok_f1])
 

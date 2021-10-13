@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
+    parser.add_argument("--gen_only", action="store_true", help="Supervised training with gen only")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -54,6 +55,7 @@ def main():
     if args.tune_hp:
         config = tune_hp(config)
     assert 0 <= config["train"]["sup_pn"] <= 1
+    if args.gen_only: assert config["train"]["sup_pn"] > 0
     write_json(config, os.path.join(args.out_dir, "config.json"))
     config["encoder"]["num_classes"] = len(dataset_mapping)
 
@@ -81,7 +83,8 @@ def main():
     test_dataloader = DataLoader(test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
     # instantiate models
-    enc, gen = instantiate_models(config, device, os.path.join(args.model_dir, "best_enc_weights.pth"), os.path.join(args.model_dir, "best_gen_weights.pth"))
+    enc, gen = instantiate_models(config, device, args.model_dir)
+    if args.gen_only: enc = None
 
     # Note: no longer used
     # for gradient flow tracking later
@@ -116,7 +119,7 @@ def main():
             best_val_scalar_metrics = val_scalar_metrics
             es_count = 0
             torch.save(gen.state_dict(), os.path.join(args.out_dir, "best_gen_weights.pth"))
-            torch.save(enc.state_dict(), os.path.join(args.out_dir, "best_enc_weights.pth"))
+            if enc is not None: torch.save(enc.state_dict(), os.path.join(args.out_dir, "best_enc_weights.pth"))
         else: 
             es_count += 1
             if es_count >= config["train"]["patience"]: 
@@ -125,7 +128,7 @@ def main():
     logger.info("Done training!")
     logger.info("Evaluating best model on test set")
     gen.load_state_dict(torch.load(os.path.join(args.out_dir, "best_gen_weights.pth")))
-    enc.load_state_dict(torch.load(os.path.join(args.out_dir, "best_enc_weights.pth")))
+    if enc is not None:  enc.load_state_dict(torch.load(os.path.join(args.out_dir, "best_enc_weights.pth")))
     test_scalar_metrics = test(test_dataloader, enc, gen, device, split="test")
     for tag, val in test_scalar_metrics.items(): 
         writer.add_scalar(tag, val)
