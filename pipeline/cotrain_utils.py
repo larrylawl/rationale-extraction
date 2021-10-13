@@ -131,9 +131,6 @@ def train(dataloader, enc, gen, optimizer, args, device, config):
             weight = mask_y_conf * torch.where(mask_y == 1, 1 - dataloader.dataset.evd_ratio, dataloader.dataset.evd_ratio)
             cotrain_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) 
             cotrain_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
-            print(cotrain_sup_loss)
-            exit(1)
-            # print(f"mask_sup_loss: {mask_sup_loss}")
         else: cotrain_sup_loss = torch.tensor(0)
 
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss + cotrain_sup_loss

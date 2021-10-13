@@ -20,13 +20,14 @@ from tqdm import tqdm
 
 from pipeline.cotrain_utils import *
 from utils import get_top_k_prob_mask, higher_conf, instantiate_models, load_datasets, create_instance, load_documents, load_id_jsonl_as_dict, get_optimizer, parse_alignment, prob_to_conf, read_json, same_label, top_k_idxs_multid, write_json, add_offsets
+from models.encoder import Encoder
+from models.generator import Generator
 
 logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadName)s %(message)s')
 
 logger = logging.getLogger(__name__)
 args = None
 device = None
-writer = None
 config = None
 avg_tokens = 16  # from ERASER paper
 max_tokens = 113  # assume all sequences ≤ 113 tokens (correct for esnli)
@@ -216,14 +217,13 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
 
 def main():
     start_time = time.time()
-    global args, device, writer, config
+    global args, device, config
     args = parse_args()
     logger.info(args)
     set_seed(args)
     
     if os.path.exists(args.out_dir): shutil.rmtree(args.out_dir)
     os.makedirs(args.out_dir)
-    writer = SummaryWriter(args.out_dir)
     write_json(vars(args), os.path.join(args.out_dir, "exp_args.json"))
 
     config = read_json(args.config)
@@ -257,7 +257,8 @@ def main():
     tgt_algn_mask = get_algn_mask(tgt_train_feat)
 
     # create train dataloader later
-    src_train_dataset = EraserDataset(src_train_feat, tokenizer, embedding_model, config["train"]["sup_pn"])  # NOTE: need to indicate which are sup since we'll be labelling other examples too
+    # NOTE: for train, need to indicate which are sup since we'll be labelling other examples too
+    src_train_dataset = EraserDataset(src_train_feat, tokenizer, embedding_model, config["train"]["sup_pn"])  
     src_val_dataset = EraserDataset(src_val_feat, tokenizer, embedding_model)
     src_test_dataset = EraserDataset(src_test_feat, tokenizer, embedding_model)
     src_val_dataloader = DataLoader(src_val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
@@ -270,93 +271,102 @@ def main():
     tgt_test_dataloader = DataLoader(tgt_test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     
     # instantiate models
-    src_enc, src_gen = instantiate_models(config, device, args.src_model_dir)
-    tgt_enc, tgt_gen = instantiate_models(config, device, args.tgt_model_dir)
+    src_gen = Generator(config["generator"]).to(device)
+    src_gen.load_state_dict(torch.load(os.path.join(args.src_model_dir, "best_gen_weights.pth")))
+    tgt_gen = Generator(config["generator"]).to(device)
+    tgt_gen.load_state_dict(torch.load(os.path.join(args.tgt_model_dir, "best_gen_weights.pth")))
+
 
     # instantiate optimiser
-    src_optimizer = get_optimizer([src_gen, src_enc], config["train"]["lr"])
+    src_optimizer = get_optimizer([src_gen], config["train"]["lr"])
     src_scheduler = ReduceLROnPlateau(src_optimizer, 'max', patience=2)
-    tgt_optimizer = get_optimizer([tgt_gen, tgt_enc], config["train"]["lr"])
+    tgt_optimizer = get_optimizer([tgt_gen], config["train"]["lr"])
     tgt_scheduler = ReduceLROnPlateau(tgt_optimizer, 'max', patience=2)
 
-    epochs = config["train"]["num_epochs"]
+    # TODO: cotrain early stopping
     # src_val_metrics = read_json(os.path.join(args.src_model_dir, "results.json"))
     # tgt_val_metrics = read_json(os.path.join(args.tgt_model_dir, "results.json"))
     # best_val_target_metric = src_val_metrics["best_val_f1"] + src_val_metrics["best_val_tok_f1"] + tgt_val_metrics["best_val_f1"] + tgt_val_metrics["best_val_tok_f1"]
-    best_val_target_metric = 0
-    es_count = 0
-    # cotrain_patience_count = 0
     # growth_rate = args.cotrain_rate
     # best_cotrain_rate = 0
-    for t in range(epochs):
-        logger.info(f"Epoch {t+1}\n-------------------------------")
+    
+    co_epochs = math.floor((1 - config["train"]["sup_pn"]) / args.cotrain_rate)
+    co_es_count = 0
+    for co_t in range(co_epochs):
+        logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
         # TODO: only label with best models - cur model takes awhile to adjust
         # augment train datasets with cotrain masks
         # cur_cotrain_rate = best_cotrain_rate + growth_rate
         src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args.cotrain_rate)
+        exit(1)
         src_train_dataloader = DataLoader(src_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
         tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
-        # vanilla training loops
-        src_train_scalar_metrics, _ = train(src_train_dataloader, src_enc, src_gen, src_optimizer, args, device, config)
-        src_val_scalar_metrics = test(src_val_dataloader, src_enc, src_gen, device)
-        src_overall_scalar_metrics = {**src_train_scalar_metrics, **src_val_scalar_metrics}
-        src_val_target_metric = src_overall_scalar_metrics["val_f1"] + src_overall_scalar_metrics["val_tok_f1"]
-        src_scheduler.step(src_val_target_metric)
-
-        tgt_train_scalar_metrics, _ = train(tgt_train_dataloader, tgt_enc, tgt_gen, tgt_optimizer, args, device, config)
-        tgt_val_scalar_metrics = test(tgt_val_dataloader, tgt_enc, tgt_gen, device)
-        tgt_overall_scalar_metrics = {**tgt_train_scalar_metrics, **tgt_val_scalar_metrics}
-        tgt_val_target_metric = tgt_overall_scalar_metrics["val_f1"] + tgt_overall_scalar_metrics["val_tok_f1"]
-        tgt_scheduler.step(tgt_val_target_metric)
-
-        # logging metrics
+        cotrain_writer = SummaryWriter(args.out_dir)
         for tag, val in cotrain_scalar_metrics.items():
-            writer.add_scalar(tag, val, t)
-        for tag, val in src_overall_scalar_metrics.items():
-            writer.add_scalar(f"src_{tag}", val, t)
-        writer.add_scalar('learning_rate', src_optimizer.param_groups[0]['lr'], t)
-        for tag, val in tgt_overall_scalar_metrics.items():
-            writer.add_scalar(f"tgt_{tag}", val, t)
-        writer.add_scalar('learning_rate', tgt_optimizer.param_groups[0]['lr'], t)
-        # writer.add_scalar('cotrain_rate', cur_cotrain_rate, t)
+            cotrain_writer.add_scalar(tag, val, co_t)
 
-        # early stopping and adjusting cotraining step
-        val_target_metric = src_val_target_metric + tgt_val_target_metric
-        if val_target_metric > best_val_target_metric: 
-            best_val_target_metric = val_target_metric
-            es_count = 0
-            torch.save(src_gen.state_dict(), os.path.join(args.out_dir, "best_src_gen_weights.pth"))
-            torch.save(src_enc.state_dict(), os.path.join(args.out_dir, "best_src_enc_weights.pth"))
-            torch.save(tgt_gen.state_dict(), os.path.join(args.out_dir, "best_tgt_gen_weights.pth"))
-            torch.save(tgt_enc.state_dict(), os.path.join(args.out_dir, "best_tgt_enc_weights.pth"))
+        # fine-tuning C_k 
+        epochs = config["train"]["num_epochs"]
+        es_count = 0
+        best_src_target_metric = 0
+        best_tgt_target_metric = 0
+        best_val_target_metric = 0
+        os.makedirs(os.path.join(args.out_dir, str(co_t)))
+        train_writer = SummaryWriter(os.path.join(args.out_dir, str(co_t)))
+        for t_t in range(epochs):
+            # vanilla training loops
+            src_train_scalar_metrics, _ = train(src_train_dataloader, None, src_gen, src_optimizer, args, device, config)
+            src_val_scalar_metrics = test(src_val_dataloader, None, src_gen, device)
+            src_overall_scalar_metrics = {**src_train_scalar_metrics, **src_val_scalar_metrics}
+            src_val_target_metric = src_overall_scalar_metrics["val_f1"] + src_overall_scalar_metrics["val_tok_f1"]
+            src_scheduler.step(src_val_target_metric)
 
-            # best_cotrain_rate = cur_cotrain_rate
-            # cotrain_patience_count = 0
-        else: 
-            es_count += 1
-            if es_count >= config["train"]["patience"]: 
-                logger.info("Early stopping!")
-                break
-            
-            # cotrain_patience_count += 1
-            # if cotrain_patience_count >= args.cotrain_patience:
-            #     growth_rate /= 2
-            #     cotrain_patience_count = 0
-            
-    logger.info("Done training!")
-    logger.info("Evaluating best model on test set")
-    src_gen.load_state_dict(torch.load(os.path.join(args.out_dir, "best_src_gen_weights.pth")))
-    src_enc.load_state_dict(torch.load(os.path.join(args.out_dir, "best_src_enc_weights.pth")))
-    tgt_gen.load_state_dict(torch.load(os.path.join(args.out_dir, "best_tgt_gen_weights.pth")))
-    tgt_enc.load_state_dict(torch.load(os.path.join(args.out_dir, "best_tgt_enc_weights.pth")))
-    src_test_scalar_metrics = test(src_test_dataloader, src_enc, src_gen, device, split="src_test")
-    tgt_test_scalar_metrics = test(tgt_test_dataloader, tgt_enc, tgt_gen, device, split="tgt_test")
-    test_scalar_metrics = {**src_test_scalar_metrics, **tgt_test_scalar_metrics}
-    for tag, val in test_scalar_metrics.items(): 
-        writer.add_scalar(tag, val)
-    test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
-    write_json(test_scalar_metrics, os.path.join(args.out_dir, "results.json"))
+            tgt_train_scalar_metrics, _ = train(tgt_train_dataloader, None, tgt_gen, tgt_optimizer, args, device, config)
+            tgt_val_scalar_metrics = test(tgt_val_dataloader, None, tgt_gen, device)
+            tgt_overall_scalar_metrics = {**tgt_train_scalar_metrics, **tgt_val_scalar_metrics}
+            tgt_val_target_metric = tgt_overall_scalar_metrics["val_f1"] + tgt_overall_scalar_metrics["val_tok_f1"]
+            tgt_scheduler.step(tgt_val_target_metric)
+
+            # logging metrics
+            for tag, val in src_overall_scalar_metrics.items():
+                train_writer.add_scalar(f"src_{tag}", val, t_t)
+            train_writer.add_scalar('learning_rate', src_optimizer.param_groups[0]['lr'], t_t)
+            for tag, val in tgt_overall_scalar_metrics.items():
+                train_writer.add_scalar(f"tgt_{tag}", val, t_t)
+            train_writer.add_scalar('learning_rate', tgt_optimizer.param_groups[0]['lr'], t_t)
+
+            # saving best models
+            if src_val_target_metric > best_src_target_metric: 
+                best_src_target_metric = src_val_target_metric
+                torch.save(src_gen.state_dict(), os.path.join(args.out_dir, str(t_t), "best_src_gen_weights.pth"))
+            if tgt_val_target_metric > best_tgt_target_metric:
+                best_tgt_target_metric = tgt_val_target_metric
+                torch.save(tgt_gen.state_dict(), os.path.join(args.out_dir, str(t_t), "best_tgt_gen_weights.pth"))
+
+            val_target_metric = src_val_target_metric + tgt_val_target_metric
+            # early stopping
+            if val_target_metric > best_val_target_metric: 
+                best_val_target_metric = val_target_metric
+                es_count = 0
+            else: 
+                es_count += 1
+                if es_count >= config["train"]["patience"]: 
+                    logger.info("Early stopping!")
+                    break
+                
+                
+        logger.info("Done training!")
+        logger.info("Evaluating best model on test set")
+        src_gen.load_state_dict(torch.load(os.path.join(args.out_dir, str(t_t), "best_src_gen_weights.pth")))
+        tgt_gen.load_state_dict(torch.load(os.path.join(args.out_dir, str(t_t), "best_tgt_gen_weights.pth")))
+        src_test_scalar_metrics = test(src_test_dataloader, None, src_gen, device, split="src_test")
+        tgt_test_scalar_metrics = test(tgt_test_dataloader, None, tgt_gen, device, split="tgt_test")
+        test_scalar_metrics = {**src_test_scalar_metrics, **tgt_test_scalar_metrics}
+        for tag, val in test_scalar_metrics.items(): 
+            train_writer.add_scalar(tag, val)
+        test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
+        write_json(test_scalar_metrics, os.path.join(args.out_dir, str(co_t), "results.json"))
 
 if __name__ == "__main__":
     main()
