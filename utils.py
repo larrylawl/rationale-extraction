@@ -15,8 +15,7 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 from sklearn.metrics import precision_recall_fscore_support
 import random
-from models.encoder import Encoder
-from models.generator import Generator
+
 
 @dataclass(eq=True, frozen=True)
 class Evidence:
@@ -32,8 +31,6 @@ class Evidence:
     """
     text: Union[str, List[int]]
     docid: str
-    # start_char: int=-1
-    # end_char: int=-1
     start_token: int = -1
     end_token: int = -1
     start_sentence: int=-1
@@ -63,13 +60,12 @@ class Annotation:
     classification: str
     query_type: str = None
     docids: Set[str] = None
-    alignment: Dict[int, List[int]] = None
 
     def all_evidences(self) -> Tuple[Evidence]:
         return tuple(list(chain.from_iterable(self.evidences)))
 
-def annotations_to_jsonl(annotations, output_file, mode='w'):
-    with open(output_file, mode, encoding='utf-8') as of:
+def annotations_to_jsonl(annotations, output_file, mode='w+'):
+    with open(output_file, mode=mode, encoding='utf-8') as of:
         for ann in sorted(annotations, key=lambda x: x.annotation_id):
             as_json = _annotation_to_dict(ann)
             as_str = json.dumps(as_json, sort_keys=True, ensure_ascii=False).encode('utf8')
@@ -675,24 +671,6 @@ def add_offsets(wa: Dict[int, List[int]], key_offset, val_offset):
     for k, v in wa.items():
         res[k + key_offset] = [x+val_offset for x in v]
     return res
-
-def instantiate_generator(config, device, fp=None):
-    gen = Generator(config["generator"]).to(device)
-    if fp: gen.load_state_dict(torch.load(fp))
-    return gen
-
-def instantiate_encoder(config, device, fp=None):
-    enc = Encoder(config["encoder"]).to(device)
-    if fp: enc.load_state_dict(torch.load(fp))
-    return enc
-
-def instantiate_models(config, device, model_dir=None):
-    enc = Encoder(config["encoder"]).to(device)
-    gen = Generator(config["generator"]).to(device)
-    if model_dir: 
-        enc.load_state_dict(torch.load(os.path.join(model_dir, "best_enc_weights.pth")))
-        gen.load_state_dict(torch.load(os.path.join(model_dir, "best_gen_weights.pth")))
-    return enc, gen
 
 def closest_number(lst, val):
     """ Returns number from (unsorted) list of integers closest to a given value.

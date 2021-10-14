@@ -23,16 +23,13 @@ from models.generator import Generator
 class EraserDataset(Dataset):
     """ ERASER dataset. """
 
-    def __init__(self, anns, tokenizer, embedding_model, sup_pn=1, cotrain_mask=None):
+    def __init__(self, anns, tokenizer, embedding_model, is_labelled, cotrain_mask=None):
         self.anns: AnnotationFeature = anns
         self.tokenizer = tokenizer
         self.embedding_model = embedding_model
         self.cotrain_mask = cotrain_mask  # (max_tokens, N)
         self.evd_ratio = 1.6 / 16  # for e-snli, according to ERASER paper
-        self.sup_pn = sup_pn
-        
-        self.label_size = math.ceil(sup_pn * len(anns))
-        self.label_idxs = set(random.sample(range(len(anns)), self.label_size))
+        self.is_labelled = is_labelled
 
     def __len__(self):
         return len(self.anns)
@@ -43,8 +40,7 @@ class EraserDataset(Dataset):
         assert len(t_e) == len(r)
         # t_e, r, l, ann_id = create_instance(self.anns[idx], self.docs, self.tokenizer, self.embedding_model, self.logger)
         c_mask = self.cotrain_mask[:, idx] if not self.cotrain_mask is None else None
-        is_l = 1 if idx in self.label_idxs else 0
-        return t_e, len(t_e), r, l, ann_id, c_mask, is_l
+        return t_e, len(t_e), r, l, ann_id, c_mask
 
 @dataclass(eq=True)
 class AnnotationFeature:
@@ -57,7 +53,7 @@ class AnnotationFeature:
 def pad_collate(batch):
     # print(len(batch))
     # print(type(batch))
-    (t_e, t_e_lens, r, l, ann_ids, c_mask, is_l) = zip(*batch)
+    (t_e, t_e_lens, r, l, ann_ids, c_mask) = zip(*batch)
     # t_e_lens = [t.size()[0] for t in t_e]
 
     t_e_pad = pad_sequence(t_e)  # (L, bs, H_in)
@@ -67,9 +63,8 @@ def pad_collate(batch):
     t_e_lens = torch.tensor(t_e_lens)
     l = torch.stack(l, dim = 0)  # (bs)
     if c_mask[0] != None: c_mask = torch.stack(c_mask, dim = 1)
-    is_l = torch.tensor(is_l)  # (bs)
 
-    return t_e_pad, t_e_lens, r_pad, l, ann_ids, c_mask, is_l
+    return t_e_pad, t_e_lens, r_pad, l, ann_ids, c_mask
 
 def tune_hp(config):
     # config["generator"]["selection_lambda"] = round(10 ** random.uniform(-4, -2), 5)
@@ -83,14 +78,15 @@ def tune_hp(config):
 def get_best_val_metrics(metrics: Dict[str, float]):
     return metrics["val_f1"] + metrics["val_tok_f1"]
 
-def create_datasets_features(dataset: List[Annotation], docs: Dict[str, str], device) -> List[List[AnnotationFeature]]:
+
+def create_datasets_features(dataset: List[List[Annotation]], docs: Dict[str, str], device) -> List[List[AnnotationFeature]]:
     res = []
     for ds in dataset:
         features = create_features(ds, docs, device)
         res.append(features)
     return res
 
-def create_features(anns: Annotation, docs: Dict[str, str], device) -> List[AnnotationFeature]:
+def create_features(anns: List[Annotation], docs: Dict[str, str], device) -> List[AnnotationFeature]:
     features = []
     for ann in anns:
         annotation_id: str = ann.annotation_id
@@ -106,7 +102,6 @@ def create_features(anns: Annotation, docs: Dict[str, str], device) -> List[Anno
         for docid in docids:
             t = docs[docid]
             text.append(t)
-            
             # get rationale
             r = [0.0] * len(t.split())
             if docid in document_evidence_map:
@@ -151,7 +146,7 @@ def train(dataloader, enc, gen, optimizer):
 
     gen.train()
     if enc is not None: enc.train()
-    for batch, (t_e_pad, t_e_lens, r_pad, l, _, c_mask, is_l) in enumerate(tqdm(dataloader)):  
+    for batch, (t_e_pad, t_e_lens, r_pad, l, _, c_mask) in enumerate(tqdm(dataloader)):  
         # forward pass
         mask = gen(t_e_pad, t_e_lens)
         # hard yet differentiable by using the same trick as https://pytorch.org/docs/stable/generated/torch.nn.functional.gumbel_softmax.html#
@@ -177,16 +172,16 @@ def train(dataloader, enc, gen, optimizer):
         selection_cost, continuity_cost = gen.loss(mask)
 
         ## sup rationale loss
-        weight = r_pad.clone()
-        weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
-        weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
-        weight[weight == -1] = 0  # padding values
-        weight[:, is_l == 0] = 0  # zero out non labels
-        mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average
-        mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no labels
-        # print(f"loss: {nn.BCELoss(weight, reduction='sum')(mask, r_pad)}")
-        # print(torch.count_nonzero(weight))
-        # print(f"mask_sup_loss: {mask_sup_loss}")
+        if dataloader.dataset.is_labelled:
+            weight = r_pad.clone()
+            weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
+            weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
+            weight[weight == -1] = 0  # padding values
+            mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average
+            mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no labels
+            # print(f"loss: {nn.BCELoss(weight, reduction='sum')(mask, r_pad)}")
+            # print(torch.count_nonzero(weight))
+            # print(f"mask_sup_loss: {mask_sup_loss}")
 
         ## cotrain rationale loss
         if not c_mask[0] == None:
@@ -199,7 +194,7 @@ def train(dataloader, enc, gen, optimizer):
             mask_y = (mask_y_prob > 0.5).float()
             weight = mask_y_conf * torch.where(mask_y == 1, 1 - dataloader.dataset.evd_ratio, dataloader.dataset.evd_ratio)
             cotrain_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) 
-            cotrain_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
+            cotrain_sup_loss = torch.nan_to_num(cotrain_sup_loss)  # if no self-labels
         else: cotrain_sup_loss = torch.tensor(0)
 
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss + cotrain_sup_loss
@@ -220,7 +215,7 @@ def train(dataloader, enc, gen, optimizer):
     scalar_metrics = {}
     for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i]
 
-    return scalar_metrics, _
+    return enc, gen, scalar_metrics, _
 
 def test(dataloader, enc, gen, split="val"):
     running_scalar_labels = [f"{split}_f1", f"{split}_tok_precision", f"{split}_tok_recall", f"{split}_tok_f1", f"{split}_mask_sup_loss"]
@@ -229,7 +224,7 @@ def test(dataloader, enc, gen, split="val"):
     gen.eval()
     if enc is not None: enc.eval()
     with torch.no_grad():
-        for batch, (t_e_pad, t_e_lens, r_pad, l, _, _, _) in enumerate(tqdm(dataloader)):        
+        for batch, (t_e_pad, t_e_lens, r_pad, l, _, _) in enumerate(tqdm(dataloader)):        
             mask = gen(t_e_pad, t_e_lens)
             mask_hard = (mask > 0.5).float()
             weight = r_pad.clone()
@@ -237,7 +232,7 @@ def test(dataloader, enc, gen, split="val"):
             weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
             weight[weight == -1] = 0  # padding values
             mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average )
-            mask_sup_loss = torch.nan_to_num(mask_sup_loss)
+            mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no labels
             tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard, r_pad, t_e_lens)
 
             if enc is not None:
@@ -265,7 +260,8 @@ def train_loop(train_dataloader, val_dataloader, gen, enc, optimizer, epochs, ou
 
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
-        train_scalar_metrics, _ = train(train_dataloader, enc, gen, optimizer)
+        enc, gen, train_scalar_metrics, _ = train(train_dataloader, enc, gen, optimizer)
+        # TODO: fn to combine train_scalar_metrics in micro way
         val_scalar_metrics = test(val_dataloader, enc, gen)
         overall_scalar_metrics = {**train_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]

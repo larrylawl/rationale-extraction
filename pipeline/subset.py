@@ -3,8 +3,8 @@ from copy import copy
 import random
 import os
 import argparse
-from utils import load_jsonl, write_jsonl
-from shutil import copyfile
+from utils import load_datasets, load_id_jsonl_as_dict, load_jsonl, write_jsonl, annotations_from_jsonl, annotations_to_jsonl
+import shutil
 
 def parse_args():
     parser = argparse.ArgumentParser("Outputs a subset of (train|val|test) directory.")
@@ -22,66 +22,53 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     random.seed(args.seed)
+    if os.path.exists(args.src_opd): shutil.rmtree(args.src_opd)
+    os.makedirs(args.src_opd)
+    if os.path.exists(args.tgt_opd): shutil.rmtree(args.tgt_opd)
+    os.makedirs(args.tgt_opd)
     assert os.path.isfile(os.path.join(args.src_ipd, "train.jsonl"))
     assert os.path.isfile(os.path.join(args.src_ipd, "val.jsonl"))
     assert os.path.isfile(os.path.join(args.src_ipd, "test.jsonl"))
-    assert not os.path.exists(args.src_opd)
     assert not os.path.isfile(os.path.join(args.src_opd, "train.jsonl"))
     assert not os.path.isfile(os.path.join(args.src_opd, "val.jsonl"))
     assert not os.path.isfile(os.path.join(args.src_opd, "test.jsonl"))
     assert os.path.isfile(os.path.join(args.tgt_ipd, "train.jsonl"))
     assert os.path.isfile(os.path.join(args.tgt_ipd, "val.jsonl"))
     assert os.path.isfile(os.path.join(args.tgt_ipd, "test.jsonl"))
-    assert not os.path.exists(args.tgt_opd)
     assert not os.path.isfile(os.path.join(args.tgt_opd, "train.jsonl"))
     assert not os.path.isfile(os.path.join(args.tgt_opd, "val.jsonl"))
     assert not os.path.isfile(os.path.join(args.tgt_opd, "test.jsonl"))
 
-    src_train_jsl = load_jsonl(os.path.join(args.src_ipd, "train.jsonl"))
-    src_val_jsl = load_jsonl(os.path.join(args.src_ipd, "val.jsonl"))
-    src_test_jsl = load_jsonl(os.path.join(args.src_ipd, "test.jsonl"))
-    tgt_train_jsl = load_jsonl(os.path.join(args.tgt_ipd, "train.jsonl"))
-    tgt_val_jsl = load_jsonl(os.path.join(args.tgt_ipd, "val.jsonl"))
-    tgt_test_jsl = load_jsonl(os.path.join(args.tgt_ipd, "test.jsonl"))
+    # load datasets
+    src_all_ds = load_datasets(args.src_ipd)
+    tgt_all_ds = load_datasets(args.tgt_ipd)
+    src_docs = load_id_jsonl_as_dict(os.path.join(args.src_ipd, "docs.jsonl"))
+    tgt_docs = load_id_jsonl_as_dict(os.path.join(args.tgt_ipd, "docs.jsonl"))
+    wa = load_id_jsonl_as_dict(os.path.join(args.tgt_ipd, "wa.jsonl"))
 
-    assert len(src_train_jsl) == len(tgt_train_jsl)
-    assert len(src_val_jsl) == len(tgt_val_jsl)
-    assert len(src_test_jsl) == len(tgt_test_jsl)
+    sub_wa = []
+    src_sub_docs = []
+    tgt_sub_docs = []
+    sizes = [args.train_size, args.val_size, args.test_size]
+    splits = ["train", "val", "test"]
+    for i, split in enumerate(splits):
+        ids = set(random.sample(range(0, len(src_all_ds[i])), int(sizes[i])))
+        src_sub_ds = [src_all_ds[i][id] for id in ids]
+        tgt_sub_ds = [tgt_all_ds[i][id] for id in ids]
 
-    train_ids = set(random.sample(range(0, len(src_train_jsl)), int(args.train_size)))
-    val_ids = set(random.sample(range(0, len(src_val_jsl)), int(args.val_size)))
-    test_ids = set(random.sample(range(0, len(src_test_jsl)), int(args.test_size)))
-    
-    src_sub_train_jsl = []
-    src_sub_val_jsl = []
-    src_sub_test_jsl = []
-    tgt_sub_train_jsl = []
-    tgt_sub_val_jsl = []
-    tgt_sub_test_jsl = []
-
-    for i in range(len(src_train_jsl)):
-        if i in train_ids:
-            src_sub_train_jsl.append(src_train_jsl[i])
-            tgt_sub_train_jsl.append(tgt_train_jsl[i])
-    
-    for i in range(len(src_val_jsl)):
-        if i in val_ids:
-            src_sub_val_jsl.append(src_val_jsl[i])
-            tgt_sub_val_jsl.append(tgt_val_jsl[i])
-    
-    for i in range(len(src_test_jsl)):
-        if i in test_ids:
-            src_sub_test_jsl.append(src_test_jsl[i])
-            tgt_sub_test_jsl.append(tgt_test_jsl[i])
-
-    os.mkdir(args.src_opd)
-    os.mkdir(args.tgt_opd)
-    write_jsonl(src_sub_train_jsl, os.path.join(args.src_opd, "train.jsonl"))
-    write_jsonl(src_sub_test_jsl, os.path.join(args.src_opd, "val.jsonl"))
-    write_jsonl(src_sub_val_jsl, os.path.join(args.src_opd, "test.jsonl"))
-    write_jsonl(tgt_sub_train_jsl, os.path.join(args.tgt_opd, "train.jsonl"))
-    write_jsonl(tgt_sub_val_jsl, os.path.join(args.tgt_opd, "val.jsonl"))
-    write_jsonl(tgt_sub_test_jsl, os.path.join(args.tgt_opd, "test.jsonl"))
-    copyfile(os.path.join(args.src_ipd, "docs.jsonl"), os.path.join(args.src_opd, "docs.jsonl"))
-    copyfile(os.path.join(args.tgt_ipd, "docs.jsonl"), os.path.join(args.tgt_opd, "docs.jsonl"))
-    copyfile(os.path.join(args.tgt_ipd, "wa.jsonl"), os.path.join(args.tgt_opd, "wa.jsonl"))
+        for j in range(len(src_sub_ds)):
+            src_ann_id = src_sub_ds[j].annotation_id
+            tgt_ann_id = tgt_sub_ds[j].annotation_id
+            assert src_ann_id == tgt_ann_id
+            doc_ids = [f"{tgt_ann_id}_hypothesis", f"{tgt_ann_id}_premise"]
+            for doc_id in doc_ids:
+                sub_wa.append({"docid": doc_id, "alignment": wa[doc_id]["alignment"]})
+                src_sub_docs.append({"docid": doc_id, "document": src_docs[doc_id]["document"]})
+                tgt_sub_docs.append({"docid": doc_id, "document": tgt_docs[doc_id]["document"]})
+        
+        annotations_to_jsonl(src_sub_ds, os.path.join(args.src_opd, f"{split}.jsonl"))
+        annotations_to_jsonl(tgt_sub_ds, os.path.join(args.tgt_opd, f"{split}.jsonl"))
+    write_jsonl(sub_wa, os.path.join(args.tgt_opd, "wa.jsonl"))
+    write_jsonl(tgt_sub_docs, os.path.join(args.tgt_opd, "docs.jsonl"))
+    write_jsonl(src_sub_docs, os.path.join(args.src_opd, "docs.jsonl"))
+            

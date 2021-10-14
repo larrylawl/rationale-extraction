@@ -1,5 +1,6 @@
 {
     "embedding_model_name": "bert-base-multilingual-cased",
+    "max_tokens": 113,
     "generator": {
         "lstm": {
             "input_size": 3072,
@@ -11,8 +12,8 @@
         "linear": {
             "in_features": 256
         },
-        "selection_lambda": 0.001,
-        "continuity_lambda": 0.001
+        "selection_lambda": 0,
+        "continuity_lambda": 0
     },
     "encoder": {
         "lstm": {
@@ -30,7 +31,6 @@
         "num_epochs": 20,
         "patience": 5,
         "lr": 1e-4,
-        "batch_size": 64,
-        "sup_pn": 0.05
+        "batch_size": 64
     }
 }

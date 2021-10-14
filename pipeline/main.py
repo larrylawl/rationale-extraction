@@ -15,7 +15,7 @@ from transformers import AutoTokenizer, AutoModel
 import random
 
 from pipeline.cotrain_utils import *
-from utils import instantiate_models, load_datasets, load_documents, load_instances, get_optimizer, read_json, slice_by_index, write_json, plot_grad_flow, tracked_named_parameters, score_hard_rationale_predictions
+from utils import load_datasets, load_documents, load_instances, get_optimizer, read_json, slice_by_index, write_json
 
 logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadName)s %(message)s')
 # let's make this more or less deterministic (not resistent to restarts)
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser("Translates the files in docs.")
-    parser.add_argument("--data_dir", required=True, help="Input directory to data.")
+    parser.add_argument("--lab_data_dir", required=True, help="Input directory to data.")
     parser.add_argument("--model_dir", default=None, help="Model weights file path. If none, trains from scratch.")
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
@@ -54,9 +54,7 @@ def main():
     config = read_json(args.config)
     if args.tune_hp:
         config = tune_hp(config)
-    assert 0 <= config["train"]["sup_pn"] <= 1
     if args.gen_only: 
-        assert config["train"]["sup_pn"] > 0
         config["generator"]["selection_lambda"] = 0
         config["generator"]["continuity_lambda"] = 0
     write_json(config, os.path.join(args.out_dir, "config.json"))
@@ -72,21 +70,14 @@ def main():
     # load_instances(args.data_dir, tokenizer, embedding_model, logger, debug=True)
 
     # setting up data
-    documents: Dict[str, str] = load_documents(args.data_dir, docids=None)
-    # train_anns, val_anns, test_anns = load_datasets(args.data_dir)
-    # NOTE: can toggle --gen_only here if i need full retraining with partial supervision.
-    train_anns, val_anns, test_anns = load_datasets(args.data_dir)
-    label_size = math.ceil(config["train"]["sup_pn"] * len(train_anns))
-    label_idxs = set(random.sample(range(len(train_anns)), label_size))
-    train_anns = slice_by_index(train_anns, label_idxs)
-    train_feat, val_feat, test_feat = create_datasets_features([train_anns, val_anns, test_anns], documents, device)
-
+    documents: Dict[str, str] = load_documents(args.lab_data_dir, docids=None)
+    train_feat, val_feat, test_feat = create_datasets_features(load_datasets(args.lab_data_dir), documents, device)
 
     # TODO: change to tensor dataset to avoid expensive zipping operation of pad_collate
     # create datset
-    train_dataset = EraserDataset(train_feat, tokenizer, embedding_model)
-    val_dataset = EraserDataset(val_feat, tokenizer, embedding_model)
-    test_dataset = EraserDataset(test_feat, tokenizer, embedding_model)
+    train_dataset = EraserDataset(train_feat, tokenizer, embedding_model, is_labelled=True)
+    val_dataset = EraserDataset(val_feat, tokenizer, embedding_model, is_labelled=True)
+    test_dataset = EraserDataset(test_feat, tokenizer, embedding_model, is_labelled=True)
 
     train_dataloader = DataLoader(train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
     val_dataloader = DataLoader(val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
@@ -104,7 +95,7 @@ def main():
                                                     args.out_dir, writer, device, config["train"]["patience"], logger)
 
     logger.info("Evaluating best model on test set")
-    test_scalar_metrics = test(test_dataloader, enc, gen, device, split="test")
+    test_scalar_metrics = test(test_dataloader, enc, gen, split="test")
     for tag, val in test_scalar_metrics.items(): 
         writer.add_scalar(tag, val)
 
