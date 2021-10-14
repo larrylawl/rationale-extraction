@@ -21,11 +21,11 @@ logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadNam
 # let's make this more or less deterministic (not resistent to restarts)
 
 logger = logging.getLogger(__name__)
-args = None
-device = None
-base_dataset_name = None
-writer = None
-config = None
+# args = None
+# device = None
+# base_dataset_name = None
+# writer = None
+# config = None
 
 def parse_args():
     parser = argparse.ArgumentParser("Translates the files in docs.")
@@ -41,7 +41,7 @@ def parse_args():
 
 def main():
     start_time = time.time()
-    global args, device, base_dataset_name, writer, config
+    # global args, device, base_dataset_name, writer, config
     args = parse_args()
     logger.info(args)
     set_seed(args)
@@ -93,54 +93,22 @@ def main():
     test_dataloader = DataLoader(test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
     # instantiate models
-    enc, gen = instantiate_models(config, device, args.model_dir)
-    if args.gen_only: enc = None
+    gen = instantiate_generator(config, device)
+    enc = None if args.gen_only else instantiate_encoder(config, device)
 
     # instantiate optimiser
     optimizer = get_optimizer([gen, enc], config["train"]["lr"])
-    scheduler = ReduceLROnPlateau(optimizer, 'max', patience=2)
 
-    epochs = config["train"]["num_epochs"]
-    best_val_target_metric = 0
-    best_val_scalar_metrics = {}
-    es_count = 0
-    for t in range(epochs):
-        logger.info(f"Epoch {t+1}\n-------------------------------")
-        train_scalar_metrics, _ = train(train_dataloader, enc, gen, optimizer, args, device, config)
-        val_scalar_metrics = test(val_dataloader, enc, gen, device)
-        overall_scalar_metrics = {**train_scalar_metrics, **val_scalar_metrics}
-        val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]
-        scheduler.step(val_target_metric)
+    # training
+    gen, enc, best_val_scalar_metrics = train_loop(train_dataloader, val_dataloader, gen, enc, optimizer, config["train"]["num_epochs"], \
+                                                    args.out_dir, writer, device, config["train"]["patience"], logger)
 
-        # logging metrics
-        for tag, val in overall_scalar_metrics.items():
-            writer.add_scalar(tag, val, t)
-        writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], t)
-        # del train_tensor_metrics
-
-        # early stopping
-        if val_target_metric > best_val_target_metric:
-            best_val_target_metric = val_target_metric
-            best_val_scalar_metrics = val_scalar_metrics
-            es_count = 0
-            torch.save(gen.state_dict(), os.path.join(args.out_dir, "best_gen_weights.pth"))
-            if enc is not None: torch.save(enc.state_dict(), os.path.join(args.out_dir, "best_enc_weights.pth"))
-        else: 
-            es_count += 1
-            if es_count >= config["train"]["patience"]: 
-                logger.info("Early stopping!")
-                break
-    logger.info("Done training!")
     logger.info("Evaluating best model on test set")
-    gen.load_state_dict(torch.load(os.path.join(args.out_dir, "best_gen_weights.pth")))
-    if enc is not None:  enc.load_state_dict(torch.load(os.path.join(args.out_dir, "best_enc_weights.pth")))
     test_scalar_metrics = test(test_dataloader, enc, gen, device, split="test")
     for tag, val in test_scalar_metrics.items(): 
         writer.add_scalar(tag, val)
 
     test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
-    for k in list(best_val_scalar_metrics.keys()): 
-        best_val_scalar_metrics[f"best_{k}"] = best_val_scalar_metrics.pop(k)
     overall_scalar_metrics = {**test_scalar_metrics, **best_val_scalar_metrics}
     write_json(overall_scalar_metrics, os.path.join(args.out_dir, "results.json"))
     writer.close()
