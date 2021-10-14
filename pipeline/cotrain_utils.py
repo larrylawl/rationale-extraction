@@ -138,7 +138,7 @@ def instantiate_encoder(config, device, fp=None):
     if fp: enc.load_state_dict(torch.load(fp))
     return enc
 
-def train(dataloader, enc, gen, optimizer, evd_ratio, split="trg"):
+def train(dataloader, enc, gen, optimizer, config, split="trg"):
     running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_cont_loss", "trg_sel_loss", "trg_mask_sup_loss", "trg_cotrain_sup_loss", "trg_total_f1", "trg_tok_p", "trg_tok_r", "trg_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     skipped_count = 0
@@ -188,6 +188,8 @@ def train(dataloader, enc, gen, optimizer, evd_ratio, split="trg"):
             # TODO: try scaling confidence to quadratic x^2
             # NOTE: c_mask naturally won't select supervised labels
             # only apply BCE on nonzero values of cotrain mask
+            if config["cotrain"]["perfect"]: 
+                assert torch.equal(r_pad, c_mask[len(r_pad)])
             mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)]  # dim == 1
             mask_y_prob = c_mask[c_mask != -1] # dim == 1 
             mask_y_conf = prob_to_conf(mask_y_prob)
@@ -251,17 +253,17 @@ def test(dataloader, enc, gen, split="val"):
 
         return scalar_metrics
 
-def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, epochs, out_dir, writer, device, patience, logger):
+def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, out_dir, writer, device, config, logger):
     # instantiate optimisers
     scheduler = ReduceLROnPlateau(optimizer, 'max', patience=2)
     best_val_target_metric = 0
     best_val_scalar_metrics = {}
     es_count = 0
 
-    for t in range(epochs):
+    for t in range(config["train"]["num_epochs"]):
         logger.info(f"Epoch {t+1}\n-------------------------------")
-        enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer)
-        if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, split="train_ul")
+        enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer, config)
+        if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, config, split="train_ul")
         val_scalar_metrics = test(val_dl, enc, gen)
         overall_scalar_metrics = {**train_scalar_metrics, **train_ul_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]
@@ -282,7 +284,7 @@ def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, epochs, out_d
             if enc is not None: torch.save(enc.state_dict(), os.path.join(out_dir, "best_enc_weights.pth"))
         else: 
             es_count += 1
-            if es_count >= patience: 
+            if es_count >= config["train"]["patience"]: 
                 logger.info("Early stopping!")
                 break
     gen.load_state_dict(torch.load(os.path.join(out_dir, "best_gen_weights.pth")))

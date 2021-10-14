@@ -129,8 +129,7 @@ def compute_top_k_prob_mask(gen, dataloader, algn_mask, args, config):
 
 def cotrain(src_gen, tgt_gen, src_dl, tgt_dl, src_algn_mask, tgt_algn_mask, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
     """ Augments dataloaders with self-labels. """
-    src_dl.shuffle = False
-    tgt_dl.shuffle = False
+
 
     # src_future = torch.jit.fork(compute_top_k_prob_mask, src_gen, src_train_dataset, src_algn_mask, rate)
     # tgt_future = torch.jit.fork(compute_top_k_prob_mask, tgt_gen, tgt_train_dataset, tgt_algn_mask, rate)
@@ -143,6 +142,9 @@ def cotrain(src_gen, tgt_gen, src_dl, tgt_dl, src_algn_mask, tgt_algn_mask, args
     # compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, args, config)
     # p.join()
     # exit(1)
+
+    src_dl.shuffle = False
+    tgt_dl.shuffle = False
 
     src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_dl, src_algn_mask, args, config)
     logger.info(src_scalar_metrics)
@@ -236,43 +238,54 @@ def main():
     embedding_model.eval()  # only extracting pre-trained embeddings
 
     # setting up datasets
-    src_l_ds = create_datasets_features(load_datasets(args.src_lab_data_dir), load_documents(args.src_lab_data_dir), device)
-    tgt_l_ds = create_datasets_features(load_datasets(args.tgt_lab_data_dir), load_documents(args.tgt_lab_data_dir), device)
+    if os.path.exists(os.path.join(args.src_lab_data_dir, "src_l_feats.pkl")):
+        logger.info("Loading cached features")
+        src_l_feats = torch.load(os.path.join(args.src_lab_data_dir, "src_l_feats.pkl"))
+        src_ul_feats = torch.load(os.path.join(args.src_unlab_data_dir, "src_ul_feats.pkl"))
+        tgt_l_feats = torch.load(os.path.join(args.tgt_lab_data_dir, "tgt_l_feats.pkl"))
+        tgt_ul_feats = torch.load(os.path.join(args.tgt_unlab_data_dir, "tgt_ul_feats.pkl"))
+    else:
+        logger.info("Caching features")
+        src_l_feats = create_datasets_features(load_datasets(args.src_lab_data_dir), load_documents(args.src_lab_data_dir), device)
+        tgt_l_feats = create_datasets_features(load_datasets(args.tgt_lab_data_dir), load_documents(args.tgt_lab_data_dir), device)
 
-    src_ul_documents: Dict[str, str] = load_documents(args.src_unlab_data_dir)
-    tgt_ul_documents: Dict[str, str] = load_documents(args.tgt_unlab_data_dir)
-    src_ul_feats = create_datasets_features(load_datasets(args.src_unlab_data_dir), src_ul_documents, device)
-    tgt_ul_feats = create_datasets_features(load_datasets(args.tgt_unlab_data_dir), tgt_ul_documents, device)
+        src_ul_documents: Dict[str, str] = load_documents(args.src_unlab_data_dir)
+        tgt_ul_documents: Dict[str, str] = load_documents(args.tgt_unlab_data_dir)
+        src_ul_feats = create_datasets_features(load_datasets(args.src_unlab_data_dir), src_ul_documents, device)
+        tgt_ul_feats = create_datasets_features(load_datasets(args.tgt_unlab_data_dir), tgt_ul_documents, device)
 
-    # augmenting unlabelled datasets with word alignment
-    was = load_id_jsonl_as_dict(os.path.join(args.tgt_unlab_data_dir, "wa.jsonl"))
-    src_was: Dict[str, List[int]] = {}  # maps from src to tgt
-    tgt_was: Dict[str, List[int]] = {}  # maps from tgt to src
-    for k, v in was.items(): 
-        src_was[k] = parse_alignment(v["alignment"])
-        tgt_was[k] = parse_alignment(v["alignment"], reverse=True)
-    src_train_feat, tgt_train_feat = add_wa_to_anns(src_ul_feats[0], tgt_ul_feats[0], src_was, tgt_was, src_ul_documents, tgt_ul_documents)
-    src_ul_feats[0] = src_train_feat
-    tgt_ul_feats[0] = tgt_train_feat
-    src_algn_mask = get_algn_mask(src_train_feat, config["max_tokens"])
-    tgt_algn_mask = get_algn_mask(tgt_train_feat, config["max_tokens"])
+        # augmenting unlabelled datasets with word alignment
+        was = load_id_jsonl_as_dict(os.path.join(args.tgt_unlab_data_dir, "wa.jsonl"))
+        src_was: Dict[str, List[int]] = {}  # maps from src to tgt
+        tgt_was: Dict[str, List[int]] = {}  # maps from tgt to src
+        for k, v in was.items(): 
+            src_was[k] = parse_alignment(v["alignment"])
+            tgt_was[k] = parse_alignment(v["alignment"], reverse=True)
+        src_train_feat, tgt_train_feat = add_wa_to_anns(src_ul_feats[0], tgt_ul_feats[0], src_was, tgt_was, src_ul_documents, tgt_ul_documents)
+        src_ul_feats[0] = src_train_feat
+        tgt_ul_feats[0] = tgt_train_feat
+        torch.save(src_l_feats, os.path.join(args.src_lab_data_dir, "src_l_feats.pkl"))
+        torch.save(src_ul_feats, os.path.join(args.src_unlab_data_dir, "src_ul_feats.pkl"))
+        torch.save(tgt_l_feats, os.path.join(args.tgt_lab_data_dir, "tgt_l_feats.pkl"))
+        torch.save(tgt_ul_feats, os.path.join(args.tgt_unlab_data_dir, "tgt_ul_feats.pkl"))
+
+    src_algn_mask = get_algn_mask(src_ul_feats[0], config["max_tokens"])
+    tgt_algn_mask = get_algn_mask(tgt_ul_feats[0], config["max_tokens"])
 
     # create train dataloader later
     # NOTE: for train, need to indicate which are sup since we'll be labelling other examples too
-    src_l_ds = [EraserDataset(ds, tokenizer, embedding_model, is_labelled=True) for ds in src_l_ds]
-    src_ul_ds = [EraserDataset(ds, tokenizer, embedding_model, is_labelled=False) for ds in src_ul_feats]
-    tgt_l_ds = [EraserDataset(ds, tokenizer, embedding_model, is_labelled=True) for ds in tgt_l_ds]
-    tgt_ul_ds = [EraserDataset(ds, tokenizer, embedding_model, is_labelled=False) for ds in tgt_ul_feats]
+    # TODO: CHANGE FUCKING SHUFFLE.
+    dl_params = {"batch_size": config["train"]["batch_size"], "shuffle": False, "collate_fn": pad_collate}
+    src_l_train_dl = DataLoader(EraserDataset(src_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
+    src_ul_train_dl = DataLoader(EraserDataset(src_ul_feats[0], tokenizer, embedding_model, is_labelled=False), **dl_params)  
+    src_val_dl = DataLoader(EraserDataset(src_l_feats[1]+src_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
+    src_test_dl = DataLoader(EraserDataset(src_l_feats[2]+src_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
 
-    src_l_train_dl = DataLoader(src_l_ds[0], batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-    src_ul_train_dl = DataLoader(src_ul_ds[0], batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  # false as we need to augment with cotrain mask later
-    src_val_dl = DataLoader(ConcatDataset([src_l_ds[1], src_ul_ds[1]]), batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-    src_test_dl = DataLoader(ConcatDataset([src_l_ds[2], src_ul_ds[2]]), batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-
-    tgt_l_train_dl = DataLoader(tgt_l_ds[0], batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-    tgt_ul_train_dl = DataLoader(tgt_ul_ds[0], batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  # false as we need to augment with cotrain mask later
-    tgt_val_dl = DataLoader(ConcatDataset([tgt_l_ds[1], tgt_ul_ds[1]]), batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-    tgt_test_dl = DataLoader(ConcatDataset([tgt_l_ds[2], tgt_ul_ds[2]]), batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
+    tgt_l_train_dl = DataLoader(EraserDataset(tgt_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
+    tgt_ul_train_dl = DataLoader(EraserDataset(tgt_ul_feats[0], tokenizer, embedding_model, is_labelled=False), **dl_params)  
+    tgt_val_dl = DataLoader(EraserDataset(tgt_l_feats[1]+tgt_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
+    tgt_test_dl = DataLoader(EraserDataset(tgt_l_feats[2]+tgt_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
+    logger.info(f"after dataloaders: {time.time() - start_time}")
 
     # instantiate models
     src_gen = instantiate_generator(config, device, os.path.join(args.src_model_dir, "best_gen_weights.pth"))
@@ -300,14 +313,14 @@ def main():
         # fine-tuning C_k 
         src_out_dir = os.path.join(args.out_dir, f"src_{co_t}")
         src_writer = SummaryWriter(src_out_dir)
-        src_gen, _, src_best_val_scalar_metrics = train_loop(src_l_train_dl, src_ul_train_dl, src_val_dl, src_gen, None, src_optimizer, config["train"]["num_epochs"], 
-                    src_out_dir, src_writer, device, config["train"]["patience"], logger)
+        src_gen, _, src_best_val_scalar_metrics = train_loop(src_l_train_dl, src_ul_train_dl, src_val_dl, src_gen, None, src_optimizer, 
+                    src_out_dir, src_writer, device, config, logger)
         src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)
         
         tgt_out_dir = os.path.join(args.out_dir, f"tgt_{co_t}")
         tgt_writer = SummaryWriter(tgt_out_dir)
-        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_l_train_dl, tgt_ul_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, config["train"]["num_epochs"], 
-                    tgt_out_dir, tgt_writer, device, config["train"]["patience"], logger)
+        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_l_train_dl, tgt_ul_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
+                    tgt_out_dir, tgt_writer, device, config, logger)
         tgt_best_val_scalar_metrics = get_best_val_metrics(tgt_best_val_scalar_metrics)
         
         # saving best models
@@ -332,8 +345,8 @@ def main():
         tgt_writer.close()
 
 
-    co_src_test_scalar_metrics = test(src_test_dl, None, best_src_gen, logger, split="src_test")
-    co_tgt_test_scalar_metrics = test(tgt_test_dl, None, best_tgt_gen, logger, split="tgt_test")
+    co_src_test_scalar_metrics = test(src_test_dl, None, best_src_gen, split="src_test")
+    co_tgt_test_scalar_metrics = test(tgt_test_dl, None, best_tgt_gen, split="tgt_test")
     co_test_scalar_metrics = {**co_src_test_scalar_metrics, **co_tgt_test_scalar_metrics}
     for tag, val in co_test_scalar_metrics.items(): 
         co_writer.add_scalar(tag, val)

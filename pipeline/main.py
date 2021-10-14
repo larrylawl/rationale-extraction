@@ -84,8 +84,8 @@ def main():
     optimizer = get_optimizer([gen, enc], config["train"]["lr"])
 
     # training
-    gen, enc, best_val_scalar_metrics = train_loop(train_dl, None, val_dl, gen, enc, optimizer, config["train"]["num_epochs"], \
-                                                    args.out_dir, writer, device, config["train"]["patience"], logger)
+    gen, enc, best_val_scalar_metrics = train_loop(train_dl, None, val_dl, gen, enc, optimizer, \
+                                                    args.out_dir, writer, device, config, logger)
 
     logger.info("Evaluating best model on test set")
     test_scalar_metrics = test(test_dl, enc, gen, split="test")
