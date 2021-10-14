@@ -12,7 +12,7 @@ from multiprocessing import Pool
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, ConcatDataset
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 import argparse
@@ -38,10 +38,6 @@ def parse_args():
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
-    parser.add_argument("--cotrain_perfect", action="store_true")
-    parser.add_argument("--cotrain_rate", default=0.05, type=float, help="Train with [0, 1]% of supervised labels")
-    parser.add_argument("--cotrain_patience", default=2, type=int)
-    parser.add_argument("--cotrain_epochs", default=5, type=int)
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -76,26 +72,22 @@ def get_algn_mask(anns, max_tokens):
 
     return algn_mask
     
-def compute_top_k_prob_mask(gen, dataset, algn_mask, args, config):
+def compute_top_k_prob_mask(gen, dataloader, algn_mask, args, config):
     """ Returns prob mask tensor with only the top r% most confident tokens retained; remaining tokens are zeroed out.
     Size (L, N), where L denotes the longest sequence length and N denotes the training size.  """
     gen.eval()
     # shuffle false for prob_mask[:, 0] to correspond to annotation 0.
-    dataloader = DataLoader(dataset, batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)
     running_scalar_labels = [f"tok_p", f"tok_r", f"tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
 
     with torch.no_grad():
         # forward pass to obtain prob of all tokens
-        prob_mask = torch.zeros(config["max_tokens"], len(dataset))
-        r_mask = torch.zeros(config["max_tokens"], len(dataset))
+        prob_mask = torch.zeros(config["max_tokens"], len(dataloader.dataset))
+        r_mask = torch.zeros(config["max_tokens"], len(dataloader.dataset))
         bs = config["train"]["batch_size"]
-        for batch, (t_e_pad, t_e_lens, r_pad, _, ann_ids, _, is_l) in enumerate(tqdm(dataloader)): 
+        for batch, (t_e_pad, t_e_lens, r_pad, _, ann_ids, _) in enumerate(tqdm(dataloader)): 
             mask = gen(t_e_pad, t_e_lens)  # (L, bs)
             assert mask.size() == r_pad.size()
-            # excluding rationales which are labelled
-            mask[:, is_l == 1] = 0.51  # 0.51 instead of 0.50 so that it's selected over tokens with no alignment
-            t_e_lens[is_l == 1] = 0
 
             prob_mask[:, batch*bs:(batch+1)*bs] = F.pad(mask.T, (0, config["max_tokens"] - len(mask)), value=0.5).T # (max_tokens, bs), pad to max_tokens
             r_mask[:, batch*bs:(batch+1)*bs] = F.pad(r_pad.T, (0, config["max_tokens"] - len(r_pad)), value=-1).T # (max_tokens, bs), -1 to not clash with 0 denoting not rationale
@@ -109,12 +101,12 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, args, config):
         prob_mask_dup[algn_mask == 0] = 0.5 # ensure that tokens with no alignment (including padding) are not selected
 
         total_tokens = torch.count_nonzero(algn_mask)
-        k = math.ceil(args.cotrain_rate * total_tokens)
+        k = math.ceil(config["cotrain"]["rate"] * total_tokens)
         top_k_prob_mask = get_top_k_prob_mask(prob_mask_dup, k)# (max_tokens, trg_size)
         del prob_mask_dup
 
         # perfect labelling instead
-        if args.cotrain_perfect: 
+        if config["cotrain"]["perfect"]: 
             top_k_r_mask = r_mask.clone()
             top_k_r_mask[top_k_prob_mask == -1] = -1
             assert torch.equal((top_k_r_mask + 1).nonzero(), (top_k_prob_mask + 1).nonzero()), f"r_mask should take index from top_k_prob_mask"
@@ -135,8 +127,10 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, args, config):
 
     return top_k_prob_mask, scalar_metrics, r_mask, prob_mask
 
-def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
-    """ Augments Eraserdataset with self-labels. """
+def cotrain(src_gen, tgt_gen, src_dl, tgt_dl, src_algn_mask, tgt_algn_mask, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
+    """ Augments dataloaders with self-labels. """
+    src_dl.shuffle = False
+    tgt_dl.shuffle = False
 
     # src_future = torch.jit.fork(compute_top_k_prob_mask, src_gen, src_train_dataset, src_algn_mask, rate)
     # tgt_future = torch.jit.fork(compute_top_k_prob_mask, tgt_gen, tgt_train_dataset, tgt_algn_mask, rate)
@@ -150,9 +144,9 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     # p.join()
     # exit(1)
 
-    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, args, config)
+    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_dl, src_algn_mask, args, config)
     logger.info(src_scalar_metrics)
-    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, args, config)
+    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_dl, tgt_algn_mask, args, config)
     logger.info(tgt_scalar_metrics)
 
 
@@ -164,7 +158,7 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     denied_labels = 0
     success_labels = 0
     for tkn_idx, ann_idx in src_idxs:
-        src_wa = src_train_dataset.anns[ann_idx].alignment
+        src_wa = src_dl.dataset.anns[ann_idx].alignment
         for v in src_wa[tkn_idx.item()]:  # implicitly asserts tkn in alignment
             src_label = src_r_mask[tkn_idx, ann_idx]
             tgt_label = tgt_r_mask[v, ann_idx]
@@ -180,7 +174,7 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
                 success_labels += 1       
 
     for tkn_idx, ann_idx in tgt_idxs:
-        tgt_wa = tgt_train_dataset.anns[ann_idx].alignment
+        tgt_wa = tgt_dl.dataset.anns[ann_idx].alignment
         for v in tgt_wa[tkn_idx.item()]: 
             tgt_label = tgt_r_mask[tkn_idx, ann_idx]
             src_label = src_r_mask[v, ann_idx]
@@ -207,12 +201,14 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
     }
     logger.info(overall_scalar_metrics)
 
-    assert src_top_k_prob_mask.size(1) == len(src_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
-    assert tgt_top_k_prob_mask.size(1) == len(tgt_train_dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
+    assert src_top_k_prob_mask.size(1) == len(src_dl.dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
+    assert tgt_top_k_prob_mask.size(1) == len(tgt_dl.dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
     assert src_top_k_prob_mask.size() == tgt_top_k_prob_mask.size()
-    src_train_dataset.cotrain_mask = src_top_k_prob_mask.to(device)
-    tgt_train_dataset.cotrain_mask = tgt_top_k_prob_mask.to(device)
-    return src_train_dataset, tgt_train_dataset, overall_scalar_metrics
+    src_dl.dataset.cotrain_mask = src_top_k_prob_mask.to(device)
+    tgt_dl.dataset.cotrain_mask = tgt_top_k_prob_mask.to(device)
+    src_dl.shuffle = True
+    tgt_dl.shuffle = True
+    return src_dl, tgt_dl, overall_scalar_metrics
 
 def main():
     start_time = time.time()
@@ -229,7 +225,7 @@ def main():
     config["generator"]["continuity_lambda"] = 0
     if args.tune_hp:
         config = tune_hp(config)
-    assert 0 <= args.cotrain_rate <= 1
+    assert 0 <= config["cotrain"]["rate"] <= 1
     write_json(config, os.path.join(args.out_dir, "config.json"))
     config["encoder"]["num_classes"] = len(dataset_mapping)
 
@@ -239,59 +235,50 @@ def main():
     embedding_model.to(device)
     embedding_model.eval()  # only extracting pre-trained embeddings
 
-    # setting up data
-    was = load_id_jsonl_as_dict(os.path.join(args.tgt_data_dir, "wa.jsonl"))
-    src_was: Dict[str, List[int]] = {}  # maps from src to tgt
-    tgt_was: Dict[str, List[int]] = {}  # maps from tgt to src
-    for k, v in was.items(): 
-        src_was[k] = parse_alignment(v["alignment"])
-        tgt_was[k] = parse_alignment(v["alignment"], reverse=True)
-
-    # purely creates datasets for me
-    # TODO: val and tgt should combine labelled and unlabelled
-    # create ul ds
-    # create l ds
-    # augment l ds
+    # setting up datasets
     src_l_ds = create_datasets_features(load_datasets(args.src_lab_data_dir), load_documents(args.src_lab_data_dir), device)
     tgt_l_ds = create_datasets_features(load_datasets(args.tgt_lab_data_dir), load_documents(args.tgt_lab_data_dir), device)
 
     src_ul_documents: Dict[str, str] = load_documents(args.src_unlab_data_dir)
     tgt_ul_documents: Dict[str, str] = load_documents(args.tgt_unlab_data_dir)
-    src_ul_ds = create_datasets_features(load_datasets(args.src_unlab_data_dir), src_ul_documents, device)
-    tgt_ul_ds = create_datasets_features(load_datasets(args.tgt_unlab_data_dir), tgt_ul_documents, device)
-    src_train_feat, tgt_train_feat = add_wa_to_anns(src_ul_ds[0], tgt_ul_ds[0], src_was, tgt_was, src_ul_documents, tgt_ul_documents)
-    src_ul_ds[0] = src_train_feat
-    tgt_ul_ds[0] = tgt_train_feat
+    src_ul_feats = create_datasets_features(load_datasets(args.src_unlab_data_dir), src_ul_documents, device)
+    tgt_ul_feats = create_datasets_features(load_datasets(args.tgt_unlab_data_dir), tgt_ul_documents, device)
+
+    # augmenting unlabelled datasets with word alignment
+    was = load_id_jsonl_as_dict(os.path.join(args.tgt_unlab_data_dir, "wa.jsonl"))
+    src_was: Dict[str, List[int]] = {}  # maps from src to tgt
+    tgt_was: Dict[str, List[int]] = {}  # maps from tgt to src
+    for k, v in was.items(): 
+        src_was[k] = parse_alignment(v["alignment"])
+        tgt_was[k] = parse_alignment(v["alignment"], reverse=True)
+    src_train_feat, tgt_train_feat = add_wa_to_anns(src_ul_feats[0], tgt_ul_feats[0], src_was, tgt_was, src_ul_documents, tgt_ul_documents)
+    src_ul_feats[0] = src_train_feat
+    tgt_ul_feats[0] = tgt_train_feat
     src_algn_mask = get_algn_mask(src_train_feat, config["max_tokens"])
     tgt_algn_mask = get_algn_mask(tgt_train_feat, config["max_tokens"])
 
     # create train dataloader later
     # NOTE: for train, need to indicate which are sup since we'll be labelling other examples too
-    src_l_ds = [EraserDataset(ds, tokenizer, embedding_model, True) for ds in src_l_ds]
-    src_ul_ds = [EraserDataset(ds, tokenizer, embedding_model, False) for ds in src_ul_ds]
-    tgt_l_ds = [EraserDataset(ds, tokenizer, embedding_model, True) for ds in tgt_l_ds]
-    tgt_ul_ds = [EraserDataset(ds, tokenizer, embedding_model, False) for ds in tgt_ul_ds]
+    src_l_ds = [EraserDataset(ds, tokenizer, embedding_model, is_labelled=True) for ds in src_l_ds]
+    src_ul_ds = [EraserDataset(ds, tokenizer, embedding_model, is_labelled=False) for ds in src_ul_feats]
+    tgt_l_ds = [EraserDataset(ds, tokenizer, embedding_model, is_labelled=True) for ds in tgt_l_ds]
+    tgt_ul_ds = [EraserDataset(ds, tokenizer, embedding_model, is_labelled=False) for ds in tgt_ul_feats]
 
-    src_val_ds = 
+    src_l_train_dl = DataLoader(src_l_ds[0], batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
+    src_ul_train_dl = DataLoader(src_ul_ds[0], batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  # false as we need to augment with cotrain mask later
+    src_val_dl = DataLoader(ConcatDataset([src_l_ds[1], src_ul_ds[1]]), batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
+    src_test_dl = DataLoader(ConcatDataset([src_l_ds[2], src_ul_ds[2]]), batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
-    src_train_dataset = EraserDataset(src_train_feat, tokenizer, embedding_model, config["train"]["sup_pn"])  
-    src_val_dataset = EraserDataset(src_val_feat, tokenizer, embedding_model)
-    src_test_dataset = EraserDataset(src_test_feat, tokenizer, embedding_model)
-    src_val_dataloader = DataLoader(src_val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-    src_test_dataloader = DataLoader(src_test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
+    tgt_l_train_dl = DataLoader(tgt_l_ds[0], batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
+    tgt_ul_train_dl = DataLoader(tgt_ul_ds[0], batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  # false as we need to augment with cotrain mask later
+    tgt_val_dl = DataLoader(ConcatDataset([tgt_l_ds[1], tgt_ul_ds[1]]), batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
+    tgt_test_dl = DataLoader(ConcatDataset([tgt_l_ds[2], tgt_ul_ds[2]]), batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
-    tgt_train_dataset = EraserDataset(tgt_train_feat, tokenizer, embedding_model, config["train"]["sup_pn"])
-    tgt_val_dataset = EraserDataset(tgt_val_feat, tokenizer, embedding_model)
-    tgt_test_dataset = EraserDataset(tgt_test_feat, tokenizer, embedding_model)
-    tgt_val_dataloader = DataLoader(tgt_val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-    tgt_test_dataloader = DataLoader(tgt_test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-    exit(1)
-    
     # instantiate models
     src_gen = instantiate_generator(config, device, os.path.join(args.src_model_dir, "best_gen_weights.pth"))
     tgt_gen = instantiate_generator(config, device, os.path.join(args.tgt_model_dir, "best_gen_weights.pth"))
-    best_src_gen = copy.deepcopy(src_gen)  # won't be trained
-    best_tgt_gen = copy.deepcopy(tgt_gen)
+    best_src_gen = instantiate_generator(config, device, os.path.join(args.src_model_dir, "best_gen_weights.pth"))  # will be updated
+    best_tgt_gen = instantiate_generator(config, device, os.path.join(args.tgt_model_dir, "best_gen_weights.pth"))
 
     # instantiate optimiser
     src_optimizer = get_optimizer([src_gen], config["train"]["lr"])
@@ -300,55 +287,53 @@ def main():
     co_best_src_val_metrics = get_best_val_metrics(read_json(os.path.join(args.src_model_dir, "results.json")))
     co_best_tgt_val_metrics = get_best_val_metrics(read_json(os.path.join(args.tgt_model_dir, "results.json")))
     co_best_val_target_metric = co_best_src_val_metrics + co_best_tgt_val_metrics
-    # co_epochs = math.ceil((1 - config["train"]["sup_pn"]) / (args.cotrain_rate * 2))  # NOTE: *2 since combining both src and tgt labels
+    # co_epochs = math.ceil((1 - config["train"]["sup_pn"]) / (config["cotrain"]["rate"] * 2))  # NOTE: *2 since combining both src and tgt labels
     co_es_count = 0
     co_writer = SummaryWriter(args.out_dir)
-    for co_t in range(args.cotrain_epochs):
+    for co_t in range(config["cotrain"]["epochs"]):
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
         # augment train datasets with cotrain masks
-        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args, config, device)
+        src_ul_train_dl, tgt_ul_train_dl, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_ul_train_dl, tgt_ul_train_dl, src_algn_mask, tgt_algn_mask, args, config, device)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
 
         # fine-tuning C_k 
-        # src_out_dir = os.path.join(args.out_dir, f"src_{co_t}")
-        # src_writer = SummaryWriter(src_out_dir)
-        # src_train_dataloader = DataLoader(src_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-        # src_gen, _, src_best_val_scalar_metrics = train_loop(src_train_dataloader, src_val_dataloader, src_gen, None, src_optimizer, config["train"]["num_epochs"], 
-        #             src_out_dir, src_writer, device, config["train"]["patience"], logger)
-        # src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)
+        src_out_dir = os.path.join(args.out_dir, f"src_{co_t}")
+        src_writer = SummaryWriter(src_out_dir)
+        src_gen, _, src_best_val_scalar_metrics = train_loop(src_l_train_dl, src_ul_train_dl, src_val_dl, src_gen, None, src_optimizer, config["train"]["num_epochs"], 
+                    src_out_dir, src_writer, device, config["train"]["patience"], logger)
+        src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)
         
         tgt_out_dir = os.path.join(args.out_dir, f"tgt_{co_t}")
         tgt_writer = SummaryWriter(tgt_out_dir)
-        tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_train_dataloader, tgt_val_dataloader, tgt_gen, None, tgt_optimizer, config["train"]["num_epochs"], 
+        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_l_train_dl, tgt_ul_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, config["train"]["num_epochs"], 
                     tgt_out_dir, tgt_writer, device, config["train"]["patience"], logger)
         tgt_best_val_scalar_metrics = get_best_val_metrics(tgt_best_val_scalar_metrics)
         
         # saving best models
-        # if src_best_val_scalar_metrics > co_best_src_val_metrics: 
-        #     co_best_src_val_metrics = src_best_val_scalar_metrics
-        #     best_src_gen = copy.deepcopy(src_gen)
-        # if tgt_best_val_scalar_metrics > co_best_tgt_val_metrics:
-        #     co_best_tgt_val_metrics = tgt_best_val_scalar_metrics
-        #     best_tgt_gen = copy.deepcopy(tgt_gen)
+        if src_best_val_scalar_metrics > co_best_src_val_metrics: 
+            co_best_src_val_metrics = src_best_val_scalar_metrics
+            best_src_gen.load_state_dict(src_gen.state_dict())
+        if tgt_best_val_scalar_metrics > co_best_tgt_val_metrics:
+            co_best_tgt_val_metrics = tgt_best_val_scalar_metrics
+            best_tgt_gen.load_state_dict(tgt_gen)
         
         # co-train early stopping
-        # val_target_metric = src_best_val_scalar_metrics + tgt_best_val_scalar_metrics
-        # if val_target_metric > co_best_val_target_metric: 
-        #     co_best_val_target_metric = val_target_metric
-        #     co_es_count = 0
-        # else:
-        #     co_es_count += 1
-        #     if co_es_count >= args.cotrain_patience:
-        #         logger.info("Early stopping co-training!")
-        #         break
-        # src_writer.close()
+        val_target_metric = src_best_val_scalar_metrics + tgt_best_val_scalar_metrics
+        if val_target_metric > co_best_val_target_metric: 
+            co_best_val_target_metric = val_target_metric
+            co_es_count = 0
+        else:
+            co_es_count += 1
+            if co_es_count >= config["cotrain"]["patience"]:
+                logger.info("Early stopping co-training!")
+                break
+        src_writer.close()
         tgt_writer.close()
 
 
-    co_src_test_scalar_metrics = test(src_test_dataloader, None, best_src_gen, logger, split="src_test")
-    co_tgt_test_scalar_metrics = test(tgt_test_dataloader, None, best_tgt_gen, logger, split="tgt_test")
+    co_src_test_scalar_metrics = test(src_test_dl, None, best_src_gen, logger, split="src_test")
+    co_tgt_test_scalar_metrics = test(tgt_test_dl, None, best_tgt_gen, logger, split="tgt_test")
     co_test_scalar_metrics = {**co_src_test_scalar_metrics, **co_tgt_test_scalar_metrics}
     for tag, val in co_test_scalar_metrics.items(): 
         co_writer.add_scalar(tag, val)

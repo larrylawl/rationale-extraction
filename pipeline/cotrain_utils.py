@@ -23,12 +23,12 @@ from models.generator import Generator
 class EraserDataset(Dataset):
     """ ERASER dataset. """
 
-    def __init__(self, anns, tokenizer, embedding_model, is_labelled, cotrain_mask=None):
+    def __init__(self, anns, tokenizer, embedding_model, is_labelled, evd_ratio = 0.1, cotrain_mask=None):
         self.anns: AnnotationFeature = anns
         self.tokenizer = tokenizer
         self.embedding_model = embedding_model
         self.cotrain_mask = cotrain_mask  # (max_tokens, N)
-        self.evd_ratio = 1.6 / 16  # for e-snli, according to ERASER paper
+        self.evd_ratio = evd_ratio  # 1.6 / 16 for e-snli, according to ERASER paper
         self.is_labelled = is_labelled
 
     def __len__(self):
@@ -77,7 +77,6 @@ def tune_hp(config):
 
 def get_best_val_metrics(metrics: Dict[str, float]):
     return metrics["val_f1"] + metrics["val_tok_f1"]
-
 
 def create_datasets_features(dataset: List[List[Annotation]], docs: Dict[str, str], device) -> List[List[AnnotationFeature]]:
     res = []
@@ -139,7 +138,7 @@ def instantiate_encoder(config, device, fp=None):
     if fp: enc.load_state_dict(torch.load(fp))
     return enc
 
-def train(dataloader, enc, gen, optimizer):
+def train(dataloader, enc, gen, optimizer, evd_ratio, split="trg"):
     running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_cont_loss", "trg_sel_loss", "trg_mask_sup_loss", "trg_cotrain_sup_loss", "trg_total_f1", "trg_tok_p", "trg_tok_r", "trg_tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     skipped_count = 0
@@ -164,7 +163,7 @@ def train(dataloader, enc, gen, optimizer):
             obj_loss = torch.tensor(0)
             f1 = 0
 
-        # NOTE: training metrics won't be accurate as only supervised and cotrained idxs are labelled
+        # NOTE: training metrics won't be accurate as only cotrained idxs are labelled
         tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens)
 
         # compute losses
@@ -182,6 +181,7 @@ def train(dataloader, enc, gen, optimizer):
             # print(f"loss: {nn.BCELoss(weight, reduction='sum')(mask, r_pad)}")
             # print(torch.count_nonzero(weight))
             # print(f"mask_sup_loss: {mask_sup_loss}")
+        else: mask_sup_loss = torch.tensor(0)
 
         ## cotrain rationale loss
         if not c_mask[0] == None:
@@ -213,9 +213,9 @@ def train(dataloader, enc, gen, optimizer):
 
     total_scalar_metrics = running_scalar_metrics / ((batch + 1) - skipped_count)
     scalar_metrics = {}
-    for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i]
+    for i in range(len(running_scalar_labels)): scalar_metrics[f"{split}_{running_scalar_labels[i]}"] = total_scalar_metrics[i]
 
-    return enc, gen, scalar_metrics, _
+    return enc, gen, scalar_metrics
 
 def test(dataloader, enc, gen, split="val"):
     running_scalar_labels = [f"{split}_f1", f"{split}_tok_precision", f"{split}_tok_recall", f"{split}_tok_f1", f"{split}_mask_sup_loss"]
@@ -251,7 +251,7 @@ def test(dataloader, enc, gen, split="val"):
 
         return scalar_metrics
 
-def train_loop(train_dataloader, val_dataloader, gen, enc, optimizer, epochs, out_dir, writer, device, patience, logger):
+def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, epochs, out_dir, writer, device, patience, logger):
     # instantiate optimisers
     scheduler = ReduceLROnPlateau(optimizer, 'max', patience=2)
     best_val_target_metric = 0
@@ -260,10 +260,10 @@ def train_loop(train_dataloader, val_dataloader, gen, enc, optimizer, epochs, ou
 
     for t in range(epochs):
         logger.info(f"Epoch {t+1}\n-------------------------------")
-        enc, gen, train_scalar_metrics, _ = train(train_dataloader, enc, gen, optimizer)
-        # TODO: fn to combine train_scalar_metrics in micro way
-        val_scalar_metrics = test(val_dataloader, enc, gen)
-        overall_scalar_metrics = {**train_scalar_metrics, **val_scalar_metrics}
+        enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer)
+        if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, split="train_ul")
+        val_scalar_metrics = test(val_dl, enc, gen)
+        overall_scalar_metrics = {**train_scalar_metrics, **train_ul_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]
         scheduler.step(val_target_metric)
 

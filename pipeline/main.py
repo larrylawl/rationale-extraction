@@ -70,18 +70,11 @@ def main():
     # load_instances(args.data_dir, tokenizer, embedding_model, logger, debug=True)
 
     # setting up data
-    documents: Dict[str, str] = load_documents(args.lab_data_dir, docids=None)
-    train_feat, val_feat, test_feat = create_datasets_features(load_datasets(args.lab_data_dir), documents, device)
-
     # TODO: change to tensor dataset to avoid expensive zipping operation of pad_collate
-    # create datset
-    train_dataset = EraserDataset(train_feat, tokenizer, embedding_model, is_labelled=True)
-    val_dataset = EraserDataset(val_feat, tokenizer, embedding_model, is_labelled=True)
-    test_dataset = EraserDataset(test_feat, tokenizer, embedding_model, is_labelled=True)
-
-    train_dataloader = DataLoader(train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-    val_dataloader = DataLoader(val_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
-    test_dataloader = DataLoader(test_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
+    documents: Dict[str, str] = load_documents(args.lab_data_dir, docids=None)
+    feats = create_datasets_features(load_datasets(args.lab_data_dir), documents, device)
+    all_ds = [EraserDataset(feat, tokenizer, embedding_model, is_labelled=True) for feat in feats]
+    train_dl, val_dl, test_dl = [DataLoader(ds, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate) for ds in all_ds]
 
     # instantiate models
     gen = instantiate_generator(config, device)
@@ -91,11 +84,11 @@ def main():
     optimizer = get_optimizer([gen, enc], config["train"]["lr"])
 
     # training
-    gen, enc, best_val_scalar_metrics = train_loop(train_dataloader, val_dataloader, gen, enc, optimizer, config["train"]["num_epochs"], \
+    gen, enc, best_val_scalar_metrics = train_loop(train_dl, None, val_dl, gen, enc, optimizer, config["train"]["num_epochs"], \
                                                     args.out_dir, writer, device, config["train"]["patience"], logger)
 
     logger.info("Evaluating best model on test set")
-    test_scalar_metrics = test(test_dataloader, enc, gen, split="test")
+    test_scalar_metrics = test(test_dl, enc, gen, split="test")
     for tag, val in test_scalar_metrics.items(): 
         writer.add_scalar(tag, val)
 
