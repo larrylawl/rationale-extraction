@@ -131,7 +131,7 @@ def load_id_jsonl_as_dict(fp: str) -> Dict:
     return op
 
 def write_jsonl(jsonl, output_file):
-    with open(output_file, 'w', encoding='utf-8') as of:
+    with open(output_file, 'w+', encoding='utf-8') as of:
         for js in jsonl:
             as_str = json.dumps(js, sort_keys=True, ensure_ascii=False)
             of.write(as_str)
@@ -667,7 +667,7 @@ def parse_alignment(algn: str, reverse=False) -> Dict[int, List[int]]:
             else:
                 op[i].append(j)
                 op[i].sort()
-
+    # sorted_op = {key: value for key, value in sorted(op.items())}
     return op
 
 def add_offsets(wa: Dict[int, List[int]], key_offset, val_offset):
@@ -676,6 +676,16 @@ def add_offsets(wa: Dict[int, List[int]], key_offset, val_offset):
         res[k + key_offset] = [x+val_offset for x in v]
     return res
 
+def instantiate_generator(config, device, fp=None):
+    gen = Generator(config["generator"]).to(device)
+    if fp: gen.load_state_dict(torch.load(fp))
+    return gen
+
+def instantiate_encoder(config, device, fp=None):
+    enc = Encoder(config["encoder"]).to(device)
+    if fp: enc.load_state_dict(torch.load(fp))
+    return enc
+
 def instantiate_models(config, device, model_dir=None):
     enc = Encoder(config["encoder"]).to(device)
     gen = Generator(config["generator"]).to(device)
@@ -683,6 +693,11 @@ def instantiate_models(config, device, model_dir=None):
         enc.load_state_dict(torch.load(os.path.join(model_dir, "best_enc_weights.pth")))
         gen.load_state_dict(torch.load(os.path.join(model_dir, "best_gen_weights.pth")))
     return enc, gen
+
+def closest_number(lst, val):
+    """ Returns number from (unsorted) list of integers closest to a given value.
+    """
+    return min(lst, key=lambda x:abs(x-val))
 
 class PRFScore:
     """

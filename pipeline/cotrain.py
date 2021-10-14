@@ -6,7 +6,7 @@ import math
 import datetime
 import logging
 import shutil
-import multiprocessing as mp
+import torch.multiprocessing as mp
 from multiprocessing import Pool
 import numpy as np
 import torch
@@ -27,12 +27,11 @@ from models.generator import Generator
 logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadName)s %(message)s')
 
 logger = logging.getLogger(__name__)
-args = None
-device = None
-config = None
-avg_tokens = 16  # from ERASER paper
-max_tokens = 113  # assume all sequences ≤ 113 tokens (correct for esnli)
-label_fns = [same_label, higher_conf]  # same_label, higher_conf
+# args = None
+# device = None
+# config = None
+# max_tokens = 113  # assume all sequences ≤ 113 tokens (correct for esnli)
+# label_fns = [same_label, higher_conf]  # same_label, higher_conf
 
 def parse_args():
     parser = argparse.ArgumentParser("Cotraining.")
@@ -90,7 +89,7 @@ def add_wa_to_anns(src_train_anns, tgt_train_anns, src_was, tgt_was, src_documen
 
     return src_train_anns, tgt_train_anns
 
-def get_algn_mask(anns):
+def get_algn_mask(anns, max_tokens):
     """ (i, j) indicates if the ith token of jth annotation has an alignment. 
     """
 
@@ -101,10 +100,9 @@ def get_algn_mask(anns):
         # print(ann.alignment.keys())
     return algn_mask
     
-def compute_top_k_prob_mask(gen, dataset, algn_mask, r):
+def compute_top_k_prob_mask(gen, dataset, algn_mask, args, config):
     """ Returns prob mask tensor with only the top r% most confident tokens retained; remaining tokens are zeroed out.
     Size (L, N), where L denotes the longest sequence length and N denotes the training size.  """
-
     gen.eval()
     # shuffle false for prob_mask[:, 0] to correspond to annotation 0.
     dataloader = DataLoader(dataset, batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)
@@ -113,18 +111,19 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, r):
 
     with torch.no_grad():
         # forward pass to obtain prob of all tokens
-        prob_mask = torch.zeros(max_tokens, len(dataset))
-        r_mask = torch.zeros(max_tokens, len(dataset))
+        prob_mask = torch.zeros(config["max_tokens"], len(dataset))
+        r_mask = torch.zeros(config["max_tokens"], len(dataset))
         bs = config["train"]["batch_size"]
         for batch, (t_e_pad, t_e_lens, r_pad, _, ann_ids, _, is_l) in enumerate(tqdm(dataloader)): 
+            print("first pass")
             mask = gen(t_e_pad, t_e_lens)  # (L, bs)
             assert mask.size() == r_pad.size()
             # excluding rationales which are labelled
             mask[:, is_l == 1] = 0.51  # 0.51 instead of 0.50 so that it's selected over tokens with no alignment
             t_e_lens[is_l == 1] = 0
 
-            prob_mask[:, batch*bs:(batch+1)*bs] = F.pad(mask.T, (0, max_tokens - len(mask)), value=0.5).T # (max_tokens, bs), pad to max_tokens
-            r_mask[:, batch*bs:(batch+1)*bs] = F.pad(r_pad.T, (0, max_tokens - len(r_pad))).T # (max_tokens, bs)
+            prob_mask[:, batch*bs:(batch+1)*bs] = F.pad(mask.T, (0, config["max_tokens"] - len(mask)), value=0.5).T # (max_tokens, bs), pad to max_tokens
+            r_mask[:, batch*bs:(batch+1)*bs] = F.pad(r_pad.T, (0, config["max_tokens"] - len(r_pad)), value=-1).T # (max_tokens, bs), -1 to not clash with 0 denoting not rationale
 
             mask_hard = (mask.detach() > 0.5).float() - mask.detach() + mask  
             tok_p, tok_r, tok_f1 = score_hard_rationale_predictions(mask_hard.detach(), r_pad.detach(), t_e_lens, average="micro")  # micro for valid comparison with top k scores
@@ -135,7 +134,7 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, r):
         prob_mask_dup[algn_mask == 0] = 0.5 # ensure that tokens with no alignment (including padding) are not selected
 
         total_tokens = torch.count_nonzero(algn_mask)
-        k = math.ceil(r * total_tokens)
+        k = math.ceil(args.cotrain_rate * total_tokens)
         top_k_prob_mask = get_top_k_prob_mask(prob_mask_dup, k)# (max_tokens, trg_size)
         del prob_mask_dup
 
@@ -158,19 +157,28 @@ def compute_top_k_prob_mask(gen, dataset, algn_mask, r):
 
         total_scalar_metrics = running_scalar_metrics / (batch + 1)
         for i in range(len(running_scalar_labels)): scalar_metrics[running_scalar_labels[i]] = total_scalar_metrics[i]
+        print(scalar_metrics)
 
     return top_k_prob_mask, scalar_metrics, r_mask, prob_mask
-        
-def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, rate) -> DataLoader:
+
+def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
     """ Augments Eraserdataset with self-labels. """
-    # src_future = torch.jit.fork(compute_top_k_prob_mask, src_gen, src_train_dataset, src_algn_mask, src_size)
-    # tgt_future = torch.jit.fork(compute_top_k_prob_mask, tgt_gen, tgt_train_dataset, tgt_algn_mask, tgt_size)
+
+    # src_future = torch.jit.fork(compute_top_k_prob_mask, src_gen, src_train_dataset, src_algn_mask, rate)
+    # tgt_future = torch.jit.fork(compute_top_k_prob_mask, tgt_gen, tgt_train_dataset, tgt_algn_mask, rate)
     # src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = torch.jit.wait(src_future)
     # tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = torch.jit.wait(tgt_future)
 
-    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, rate)
+    # p = mp.Process(target=compute_top_k_prob_mask, args=(src_gen, src_train_dataset, src_algn_mask, args, config))
+    # p.start()
+    # print("parallelising!")
+    # compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, args, config)
+    # p.join()
+    # exit(1)
+
+    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_train_dataset, src_algn_mask, args, config)
     logger.info(src_scalar_metrics)
-    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, rate)
+    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_train_dataset, tgt_algn_mask, args, config)
     logger.info(tgt_scalar_metrics)
 
 
@@ -234,7 +242,6 @@ def cotrain(src_gen, tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mas
 
 def main():
     start_time = time.time()
-    global args, device, config
     args = parse_args()
     logger.info(args)
     set_seed(args)
@@ -270,8 +277,8 @@ def main():
     src_train_feat, src_val_feat, src_test_feat = create_datasets_features(load_datasets(args.src_data_dir), src_documents, device)
     tgt_train_feat, tgt_val_feat, tgt_test_feat = create_datasets_features(load_datasets(args.tgt_data_dir), tgt_documents, device)
     src_train_feat, tgt_train_feat = add_wa_to_anns(src_train_feat, tgt_train_feat, src_was, tgt_was, src_documents, tgt_documents)
-    src_algn_mask = get_algn_mask(src_train_feat)
-    tgt_algn_mask = get_algn_mask(tgt_train_feat)
+    src_algn_mask = get_algn_mask(src_train_feat, config["max_tokens"])
+    tgt_algn_mask = get_algn_mask(tgt_train_feat, config["max_tokens"])
 
     # create train dataloader later
     # NOTE: for train, need to indicate which are sup since we'll be labelling other examples too
@@ -314,7 +321,8 @@ def main():
         best_tgt_gen = instantiate_generator(config, device, co_best_tgt_gen_fp)
 
         # augment train datasets with cotrain masks
-        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args.cotrain_rate)
+        src_train_dataset, tgt_train_dataset, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_train_dataset, tgt_train_dataset, src_algn_mask, tgt_algn_mask, args, config, device)
+        exit(1)
         src_train_dataloader = DataLoader(src_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
         tgt_train_dataloader = DataLoader(tgt_train_dataset, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate)
 
