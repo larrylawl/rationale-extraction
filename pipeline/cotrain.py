@@ -309,7 +309,6 @@ def main():
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
         # updates train datasets with new cotrain masks
         src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, args, config, device)
-        exit(1)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
 
@@ -317,15 +316,17 @@ def main():
         src_out_dir = os.path.join(args.out_dir, f"src_{co_t}")
         src_writer = SummaryWriter(src_out_dir)
         src_ul_train_dl = DataLoader(src_ul_train_ds, **dl_params)
-        src_gen, _, src_best_val_scalar_metrics = train_loop(src_l_train_dl, src_ul_train_dl, src_val_dl, src_gen, None, src_optimizer, 
-                    src_out_dir, src_writer, device, config, logger)
-        src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)
         
         tgt_out_dir = os.path.join(args.out_dir, f"tgt_{co_t}")
         tgt_writer = SummaryWriter(tgt_out_dir)
         tgt_ul_train_dl = DataLoader(src_ul_train_ds, **dl_params)
-        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_l_train_dl, tgt_ul_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
+        
+        src_best_val_scalar_metrics = train_loop(src_l_train_dl, src_ul_train_dl, src_val_dl, src_gen, None, src_optimizer, 
+                    src_out_dir, src_writer, device, config, logger)
+        tgt_best_val_scalar_metrics = train_loop(tgt_l_train_dl, tgt_ul_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
                     tgt_out_dir, tgt_writer, device, config, logger)
+
+        src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)
         tgt_best_val_scalar_metrics = get_best_val_metrics(tgt_best_val_scalar_metrics)
         
         # saving best models
@@ -356,7 +357,7 @@ def main():
     for tag, val in co_test_scalar_metrics.items(): 
         co_writer.add_scalar(tag, val)
     co_test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
-    write_json(co_test_scalar_metrics, os.path.join(args.out_dir, str(co_t), "results.json"))
+    write_json(co_test_scalar_metrics, os.path.join(args.out_dir, "results.json"))
 
 if __name__ == "__main__":
     main()

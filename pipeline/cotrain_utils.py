@@ -139,7 +139,7 @@ def instantiate_encoder(config, device, fp=None):
     return enc
 
 def train(dataloader, enc, gen, optimizer, config, split="trg"):
-    running_scalar_labels = ["trg_loss", "trg_obj_loss", "trg_cont_loss", "trg_sel_loss", "trg_mask_sup_loss", "trg_cotrain_sup_loss", "trg_total_f1", "trg_tok_p", "trg_tok_r", "trg_tok_f1"]
+    running_scalar_labels = ["loss", "obj_loss", "cont_loss", "sel_loss", "mask_sup_loss", "cotrain_sup_loss", "total_f1", "tok_p", "tok_r", "tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     skipped_count = 0
 
@@ -189,13 +189,15 @@ def train(dataloader, enc, gen, optimizer, config, split="trg"):
             # NOTE: c_mask naturally won't select supervised labels
             # only apply BCE on nonzero values of cotrain mask
             if config["cotrain"]["perfect"]: 
-                assert torch.equal(r_pad, c_mask[len(r_pad)])
+                assert torch.equal(r_pad[(c_mask+1).nonzero(as_tuple=True)], c_mask[(c_mask+1).nonzero(as_tuple=True)]), f"{r_pad} != {c_mask}"
             mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)]  # dim == 1
             mask_y_prob = c_mask[c_mask != -1] # dim == 1 
             mask_y_conf = prob_to_conf(mask_y_prob)
             mask_y = (mask_y_prob > 0.5).float()
             weight = mask_y_conf * torch.where(mask_y == 1, 1 - dataloader.dataset.evd_ratio, dataloader.dataset.evd_ratio)
-            cotrain_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) 
+            # total possible rationale: len(r_pad + 1.nonzero())
+            lab_pn = len(mask_pred) / len((r_pad+1).nonzero())
+            cotrain_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) * lab_pn
             cotrain_sup_loss = torch.nan_to_num(cotrain_sup_loss)  # if no self-labels
         else: cotrain_sup_loss = torch.tensor(0)
 
@@ -262,8 +264,8 @@ def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, out_dir, writ
 
     for t in range(config["train"]["num_epochs"]):
         logger.info(f"Epoch {t+1}\n-------------------------------")
+        if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, config, split="trg_ul")
         enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer, config)
-        if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, config, split="train_ul")
         val_scalar_metrics = test(val_dl, enc, gen)
         overall_scalar_metrics = {**train_scalar_metrics, **train_ul_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]
@@ -290,11 +292,27 @@ def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, out_dir, writ
     gen.load_state_dict(torch.load(os.path.join(out_dir, "best_gen_weights.pth")))
     if enc is not None: torch.save(enc.state_dict(), os.path.join(out_dir, "best_enc_weights.pth"))
     logger.info("Done training!")
-    return gen, enc, best_val_scalar_metrics
+    return best_val_scalar_metrics
     
 def label(prob_a: Tensor, prob_b: Tensor, fns):
     res = reduce(lambda res, fn: res and fn(prob_a, prob_b), fns, True)
     return res
+
+def parallelising(ctx, fn, src_args, tgt_args):
+    src_done_queue = ctx.SimpleQueue()
+
+    src_p = ctx.Process(target=fn, args=(src_args, src_done_queue))
+    src_p.start()
+    tgt_done_queue = ctx.SimpleQueue()
+    tgt_p = ctx.Process(target=fn, args=(tgt_args, tgt_done_queue))
+    tgt_p.start()
+
+    src_p.join()
+    tgt_p.join()
+    src_results = src_done_queue.get()
+    tgt_results = tgt_done_queue.get()
+
+    return src_results, tgt_results
 
 
 ### TESTS
@@ -319,7 +337,17 @@ def test_label():
     fns = [same_label, higher_conf]
     assert label(prob_a, prob_b, fns) == True
 
+
+def extractor_worker(x, done_queue):
+    done_queue.put(x.numpy())
+
+def test_parallelising():
+    import multiprocessing as mp
+    ctx = mp.get_context('spawn')
+    src_res, tgt_res = parallelising(ctx, extractor_worker, torch.tensor(1.0), torch.tensor(2.0))
+
 if __name__ == "__main__":
     print("Running unit tests...")
-    test_label()
+    # test_label()
+    test_parallelising()
     print("Unit tests passed!")

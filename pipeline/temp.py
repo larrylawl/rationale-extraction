@@ -1,30 +1,28 @@
-from typing import Tuple
+import multiprocessing as mp
 import torch
 
-def foo(x, y):
-    return x + y
+done = mp.Event()
 
-@torch.jit.script
-def helper(x, y) -> Tuple[torch.Tensor, torch.Tensor]:
-    # x, y = args
-    # Call `foo` using parallelism:
-    # First, we "fork" off a task. This task will run `foo` with argument `x`
-    future = torch.jit.fork(foo, x, y)
+def extractor_worker(done_queue):
+    done_queue.put(torch.Tensor(10,10).numpy())
+    done_queue.put(None)
+    done.wait()
 
-    # Call `foo` normally
-    x_normal = foo(x, y)
-    print(x_normal)
+producers = []
+done_queue = mp.Queue()
+for i in range(0, 1):
+    process = mp.Process(target=extractor_worker,
+                         args=(done_queue,))
+    process.start()
+    producers.append(process)
 
-    # Second, we "wait" on the task. Since the task may be running in
-    # parallel, we have to "wait" for its result to become available.
-    # Notice that by having lines of code between the "fork()" and "wait()"
-    # call for a given Future, we can overlap computations so that they
-    # run in parallel.
-    x_parallel = torch.jit.wait(future)
-
-    return x_normal, x_parallel
-
-def example(x, y):
-    return helper(x, y)
-
-print(example(torch.tensor(1), torch.tensor(2)))
+result_arrays = []
+nb_ended_workers = 0
+while nb_ended_workers != 1:
+    worker_result = done_queue.get()
+    if worker_result is None:
+        nb_ended_workers += 1
+    else:
+        result_arrays.append(worker_result)
+done.set()
+print(result_arrays)
