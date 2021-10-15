@@ -72,10 +72,12 @@ def get_algn_mask(anns, max_tokens):
 
     return algn_mask
     
-def compute_top_k_prob_mask(gen, dataloader, algn_mask, args, config):
+def compute_top_k_prob_mask(gen, ds, algn_mask, args, config):
     """ Returns prob mask tensor with only the top r% most confident tokens retained; remaining tokens are zeroed out.
     Size (L, N), where L denotes the longest sequence length and N denotes the training size.  """
+    dataloader = DataLoader(ds, batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  
     gen.eval()
+    
     # shuffle false for prob_mask[:, 0] to correspond to annotation 0.
     running_scalar_labels = [f"tok_p", f"tok_r", f"tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
@@ -127,8 +129,8 @@ def compute_top_k_prob_mask(gen, dataloader, algn_mask, args, config):
 
     return top_k_prob_mask, scalar_metrics, r_mask, prob_mask
 
-def cotrain(src_gen, tgt_gen, src_dl, tgt_dl, src_algn_mask, tgt_algn_mask, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
-    """ Augments dataloaders with self-labels. """
+def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, src_algn_mask, tgt_algn_mask, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
+    """ Augments ds with self-labels. """
 
 
     # src_future = torch.jit.fork(compute_top_k_prob_mask, src_gen, src_train_dataset, src_algn_mask, rate)
@@ -143,12 +145,9 @@ def cotrain(src_gen, tgt_gen, src_dl, tgt_dl, src_algn_mask, tgt_algn_mask, args
     # p.join()
     # exit(1)
 
-    src_dl.shuffle = False
-    tgt_dl.shuffle = False
-
-    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_dl, src_algn_mask, args, config)
+    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_ds, src_algn_mask, args, config)
     logger.info(src_scalar_metrics)
-    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_dl, tgt_algn_mask, args, config)
+    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_ds, tgt_algn_mask, args, config)
     logger.info(tgt_scalar_metrics)
 
 
@@ -160,7 +159,7 @@ def cotrain(src_gen, tgt_gen, src_dl, tgt_dl, src_algn_mask, tgt_algn_mask, args
     denied_labels = 0
     success_labels = 0
     for tkn_idx, ann_idx in src_idxs:
-        src_wa = src_dl.dataset.anns[ann_idx].alignment
+        src_wa = src_ds.anns[ann_idx].alignment
         for v in src_wa[tkn_idx.item()]:  # implicitly asserts tkn in alignment
             src_label = src_r_mask[tkn_idx, ann_idx]
             tgt_label = tgt_r_mask[v, ann_idx]
@@ -176,7 +175,7 @@ def cotrain(src_gen, tgt_gen, src_dl, tgt_dl, src_algn_mask, tgt_algn_mask, args
                 success_labels += 1       
 
     for tkn_idx, ann_idx in tgt_idxs:
-        tgt_wa = tgt_dl.dataset.anns[ann_idx].alignment
+        tgt_wa = tgt_ds.anns[ann_idx].alignment
         for v in tgt_wa[tkn_idx.item()]: 
             tgt_label = tgt_r_mask[tkn_idx, ann_idx]
             src_label = src_r_mask[v, ann_idx]
@@ -203,14 +202,13 @@ def cotrain(src_gen, tgt_gen, src_dl, tgt_dl, src_algn_mask, tgt_algn_mask, args
     }
     logger.info(overall_scalar_metrics)
 
-    assert src_top_k_prob_mask.size(1) == len(src_dl.dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
-    assert tgt_top_k_prob_mask.size(1) == len(tgt_dl.dataset), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
+    assert src_top_k_prob_mask.size(1) == len(src_ds), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
+    assert tgt_top_k_prob_mask.size(1) == len(tgt_ds), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
     assert src_top_k_prob_mask.size() == tgt_top_k_prob_mask.size()
-    src_dl.dataset.cotrain_mask = src_top_k_prob_mask.to(device)
-    tgt_dl.dataset.cotrain_mask = tgt_top_k_prob_mask.to(device)
-    src_dl.shuffle = True
-    tgt_dl.shuffle = True
-    return src_dl, tgt_dl, overall_scalar_metrics
+    src_ds.cotrain_mask = src_top_k_prob_mask.to(device)
+    tgt_ds.cotrain_mask = tgt_top_k_prob_mask.to(device)
+
+    return src_ds, tgt_ds, overall_scalar_metrics
 
 def main():
     start_time = time.time()
@@ -274,15 +272,17 @@ def main():
 
     # create train dataloader later
     # NOTE: for train, need to indicate which are sup since we'll be labelling other examples too
-    # TODO: CHANGE FUCKING SHUFFLE.
-    dl_params = {"batch_size": config["train"]["batch_size"], "shuffle": False, "collate_fn": pad_collate}
+    src_ul_train_ds = EraserDataset(src_ul_feats[0], tokenizer, embedding_model, is_labelled=False)
+    tgt_ul_train_ds = EraserDataset(tgt_ul_feats[0], tokenizer, embedding_model, is_labelled=False)
+
+    dl_params = {"batch_size": config["train"]["batch_size"], "shuffle": True, "collate_fn": pad_collate}
     src_l_train_dl = DataLoader(EraserDataset(src_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
-    src_ul_train_dl = DataLoader(EraserDataset(src_ul_feats[0], tokenizer, embedding_model, is_labelled=False), **dl_params)  
+    # src_ul_train_dl = DataLoader(EraserDataset(src_ul_feats[0], tokenizer, embedding_model, is_labelled=False), batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  
     src_val_dl = DataLoader(EraserDataset(src_l_feats[1]+src_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
     src_test_dl = DataLoader(EraserDataset(src_l_feats[2]+src_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
 
     tgt_l_train_dl = DataLoader(EraserDataset(tgt_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
-    tgt_ul_train_dl = DataLoader(EraserDataset(tgt_ul_feats[0], tokenizer, embedding_model, is_labelled=False), **dl_params)  
+    # tgt_ul_train_dl = DataLoader(EraserDataset(tgt_ul_feats[0], tokenizer, embedding_model, is_labelled=False), batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  
     tgt_val_dl = DataLoader(EraserDataset(tgt_l_feats[1]+tgt_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
     tgt_test_dl = DataLoader(EraserDataset(tgt_l_feats[2]+tgt_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
     logger.info(f"after dataloaders: {time.time() - start_time}")
@@ -305,20 +305,23 @@ def main():
     co_writer = SummaryWriter(args.out_dir)
     for co_t in range(config["cotrain"]["epochs"]):
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
-        # augment train datasets with cotrain masks
-        src_ul_train_dl, tgt_ul_train_dl, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_ul_train_dl, tgt_ul_train_dl, src_algn_mask, tgt_algn_mask, args, config, device)
+        # updates train datasets with new cotrain masks
+        src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, args, config, device)
+        exit(1)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
 
         # fine-tuning C_k 
         src_out_dir = os.path.join(args.out_dir, f"src_{co_t}")
         src_writer = SummaryWriter(src_out_dir)
+        src_ul_train_dl = DataLoader(src_ul_train_ds, **dl_params)
         src_gen, _, src_best_val_scalar_metrics = train_loop(src_l_train_dl, src_ul_train_dl, src_val_dl, src_gen, None, src_optimizer, 
                     src_out_dir, src_writer, device, config, logger)
         src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)
         
         tgt_out_dir = os.path.join(args.out_dir, f"tgt_{co_t}")
         tgt_writer = SummaryWriter(tgt_out_dir)
+        tgt_ul_train_dl = DataLoader(src_ul_train_ds, **dl_params)
         tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_l_train_dl, tgt_ul_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
                     tgt_out_dir, tgt_writer, device, config, logger)
         tgt_best_val_scalar_metrics = get_best_val_metrics(tgt_best_val_scalar_metrics)
