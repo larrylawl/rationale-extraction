@@ -18,14 +18,7 @@ from pipeline.cotrain_utils import *
 from utils import load_datasets, load_documents, load_instances, get_optimizer, read_json, slice_by_index, write_json
 
 logging.basicConfig(level=logging.INFO, format='%(relativeCreated)6d %(threadName)s %(message)s')
-# let's make this more or less deterministic (not resistent to restarts)
-
 logger = logging.getLogger(__name__)
-# args = None
-# device = None
-# base_dataset_name = None
-# writer = None
-# config = None
 
 def parse_args():
     parser = argparse.ArgumentParser("Translates the files in docs.")
@@ -35,6 +28,7 @@ def parse_args():
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
     parser.add_argument("--gen_only", action="store_true", help="Supervised training with gen only")
+    parser.add_argument("--test_mode", action="store_true")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -44,6 +38,7 @@ def main():
     # global args, device, base_dataset_name, writer, config
     args = parse_args()
     logger.info(args)
+    if args.test_mode: assert args.model_dir
     set_seed(args)
     
     if os.path.exists(args.out_dir): shutil.rmtree(args.out_dir)
@@ -77,15 +72,18 @@ def main():
     train_dl, val_dl, test_dl = [DataLoader(ds, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate) for ds in all_ds]
 
     # instantiate models
-    gen = instantiate_generator(config, device)
+    gen = instantiate_generator(config, device, os.path.join(args.model_dir, "best_gen_weights.pth")) if args.test_mode else instantiate_generator(config, device)
     enc = None if args.gen_only else instantiate_encoder(config, device)
 
     # instantiate optimiser
-    optimizer = get_optimizer([gen, enc], config["train"]["lr"])
+    if not args.test_mode:
+        optimizer = get_optimizer([gen, enc], config["train"]["lr"])
 
-    # training
-    gen, enc, best_val_scalar_metrics = train_loop(train_dl, None, val_dl, gen, enc, optimizer, \
-                                                    args.out_dir, writer, device, config, logger)
+        # training
+        gen, enc, best_val_scalar_metrics = train_loop(train_dl, None, val_dl, gen, enc, optimizer, \
+                                                        args.out_dir, writer, device, config, logger)
+    else: best_val_scalar_metrics = {}
+
 
     logger.info("Evaluating best model on test set")
     test_scalar_metrics = test(test_dl, enc, gen, split="test")

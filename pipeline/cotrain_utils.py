@@ -138,7 +138,7 @@ def instantiate_encoder(config, device, fp=None):
     if fp: enc.load_state_dict(torch.load(fp))
     return enc
 
-def train(dataloader, enc, gen, optimizer, config, split="trg"):
+def train(dataloader, enc, gen, optimizer, config, split="trg", weight_strategy="weighted"):
     running_scalar_labels = ["loss", "obj_loss", "cont_loss", "sel_loss", "mask_sup_loss", "cotrain_sup_loss", "total_f1", "tok_p", "tok_r", "tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     skipped_count = 0
@@ -173,9 +173,12 @@ def train(dataloader, enc, gen, optimizer, config, split="trg"):
         ## sup rationale loss
         if dataloader.dataset.is_labelled:
             weight = r_pad.clone()
-            weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
-            weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
             weight[weight == -1] = 0  # padding values
+            if weight_strategy == "default":
+                weight[weight == 0] = 1
+            elif weight_strategy == "weighted":
+                weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
+                weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
             mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average
             mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no labels
             # print(f"loss: {nn.BCELoss(weight, reduction='sum')(mask, r_pad)}")
@@ -265,6 +268,7 @@ def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, out_dir, writ
     for t in range(config["train"]["num_epochs"]):
         logger.info(f"Epoch {t+1}\n-------------------------------")
         if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, config, split="trg_ul")
+        else: train_ul_scalar_metrics = {}
         enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer, config)
         val_scalar_metrics = test(val_dl, enc, gen)
         overall_scalar_metrics = {**train_scalar_metrics, **train_ul_scalar_metrics, **val_scalar_metrics}
@@ -292,7 +296,7 @@ def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, out_dir, writ
     gen.load_state_dict(torch.load(os.path.join(out_dir, "best_gen_weights.pth")))
     if enc is not None: torch.save(enc.state_dict(), os.path.join(out_dir, "best_enc_weights.pth"))
     logger.info("Done training!")
-    return best_val_scalar_metrics
+    return gen, enc, best_val_scalar_metrics
     
 def label(prob_a: Tensor, prob_b: Tensor, fns):
     res = reduce(lambda res, fn: res and fn(prob_a, prob_b), fns, True)

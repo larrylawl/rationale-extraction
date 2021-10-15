@@ -38,6 +38,7 @@ def parse_args():
     parser.add_argument("--config", required=True, help="Model config file.")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
+    parser.add_argument("--overwrite_cache", action="store_true")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -238,7 +239,7 @@ def main():
     embedding_model.eval()  # only extracting pre-trained embeddings
 
     # setting up datasets
-    if os.path.exists(os.path.join(args.src_lab_data_dir, "src_l_feats.pkl")) and os.path.exists(os.path.join(args.src_unlab_data_dir, "src_ul_feats.pkl")):
+    if not args.overwrite_cache and os.path.exists(os.path.join(args.src_lab_data_dir, "src_l_feats.pkl")) and os.path.exists(os.path.join(args.src_unlab_data_dir, "src_ul_feats.pkl")):
         logger.info("Loading cached features")
         src_l_feats = torch.load(os.path.join(args.src_lab_data_dir, "src_l_feats.pkl"))
         src_ul_feats = torch.load(os.path.join(args.src_unlab_data_dir, "src_ul_feats.pkl"))
@@ -308,8 +309,9 @@ def main():
     for co_t in range(config["cotrain"]["epochs"]):
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
         # updates train datasets with new cotrain masks
-        rate = config["cotrain"]["rate"] * (1 + co_t)
+        rate = max(config["cotrain"]["rate"] * (1 + co_t), 1)
         src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device)
+        exit(1)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
 
@@ -322,9 +324,9 @@ def main():
         tgt_writer = SummaryWriter(tgt_out_dir)
         tgt_ul_train_dl = DataLoader(src_ul_train_ds, **dl_params)
         
-        src_best_val_scalar_metrics = train_loop(src_l_train_dl, src_ul_train_dl, src_val_dl, src_gen, None, src_optimizer, 
+        src_gen, _, src_best_val_scalar_metrics = train_loop(src_l_train_dl, src_ul_train_dl, src_val_dl, src_gen, None, src_optimizer, 
                     src_out_dir, src_writer, device, config, logger)
-        tgt_best_val_scalar_metrics = train_loop(tgt_l_train_dl, tgt_ul_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
+        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_l_train_dl, tgt_ul_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
                     tgt_out_dir, tgt_writer, device, config, logger)
 
         src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)

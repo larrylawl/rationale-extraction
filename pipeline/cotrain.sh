@@ -2,8 +2,8 @@
 set -e
 
 lab_dataset_name=esnli_2000
-unlab_dataset_name=esnli_19000
-exp_name=cotrain/perfect
+unlab_dataset_name=esnli_lightest
+exp_name=toy_exp
 
 src_lab_data_dir=../data/esnli/$lab_dataset_name
 tgt_lab_data_dir=../data/esnli/${lab_dataset_name}_fr
@@ -25,5 +25,6 @@ for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
         --config $config \
         --out_dir $out_dir/$i \
         --seed $(( 100 + $i ))
+        # --overwrite_cache
         # --tune_hp
 done
