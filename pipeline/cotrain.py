@@ -72,7 +72,7 @@ def get_algn_mask(anns, max_tokens):
 
     return algn_mask
     
-def compute_top_k_prob_mask(gen, ds, algn_mask, args, config):
+def compute_top_k_prob_mask(gen, ds, algn_mask, rate, args, config):
     """ Returns prob mask tensor with only the top r% most confident tokens retained; remaining tokens are zeroed out.
     Size (L, N), where L denotes the longest sequence length and N denotes the training size.  """
     dataloader = DataLoader(ds, batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  
@@ -99,7 +99,7 @@ def compute_top_k_prob_mask(gen, ds, algn_mask, args, config):
             running_scalar_metrics += torch.tensor([tok_p, tok_r, tok_f1])
 
         # label top k% of most confident tokens
-        top_k_prob_mask = get_top_k_prob_mask(prob_mask, algn_mask, config["cotrain"]["rate"], strategy="token")# (max_tokens, trg_size)
+        top_k_prob_mask = get_top_k_prob_mask(prob_mask, algn_mask, rate, strategy="token")# (max_tokens, trg_size)
 
         # perfect labelling instead
         if config["cotrain"]["perfect"]: 
@@ -123,7 +123,7 @@ def compute_top_k_prob_mask(gen, ds, algn_mask, args, config):
 
     return top_k_prob_mask, scalar_metrics, r_mask, prob_mask
 
-def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, src_algn_mask, tgt_algn_mask, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
+def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
     """ Augments ds with self-labels. """
 
 
@@ -139,9 +139,9 @@ def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, src_algn_mask, tgt_algn_mask, args
     # p.join()
     # exit(1)
 
-    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_ds, src_algn_mask, args, config)
+    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_ds, src_algn_mask, rate, args, config)
     logger.info(src_scalar_metrics)
-    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_ds, tgt_algn_mask, args, config)
+    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_ds, tgt_algn_mask, rate, args, config)
     logger.info(tgt_scalar_metrics)
 
 
@@ -308,7 +308,8 @@ def main():
     for co_t in range(config["cotrain"]["epochs"]):
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
         # updates train datasets with new cotrain masks
-        src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, args, config, device)
+        rate = config["cotrain"]["rate"] * (1 + co_t)
+        src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
 

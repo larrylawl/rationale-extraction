@@ -1,5 +1,6 @@
 import json
 import os
+import math
 import unicodedata
 import nltk
 from operator import itemgetter
@@ -622,15 +623,32 @@ def top_k_idxs_multid(a, k):
     res = torch.tensor(np.unravel_index(i.numpy(), a.shape)).T
     return res
 
-def get_top_k_prob_mask(prob_mask, k):
+def get_top_k_prob_mask(prob_mask, algn_mask, rate, strategy="token"):
     """ Returns new tensor with top k most confident elements in mask retained. Rest are -1. """
-    prob_mask_flat = prob_mask.flatten()
-    conf_masks = torch.abs(prob_mask_flat - 0.5)
-    v, i = torch.topk(conf_masks, k)
-    res_flat = torch.full(prob_mask_flat.size(), -1.)
-    res_flat[i] = prob_mask_flat[i]
-    res = res_flat.view(prob_mask.size())
-    
+    prob_mask_dup = prob_mask.clone()
+    prob_mask_dup[algn_mask == 0] = 0.5 # ensure that tokens with no alignment (including padding) are not selected
+
+    if strategy == "token":
+        prob_mask_flat = prob_mask_dup.flatten()
+        conf_masks = torch.abs(prob_mask_flat - 0.5)
+        total_tokens = torch.count_nonzero(algn_mask)
+        k = math.ceil(rate * total_tokens)
+        v, i = torch.topk(conf_masks, k)
+        res_flat = torch.full(prob_mask_flat.size(), -1.)
+        res_flat[i] = prob_mask_flat[i]
+        res = res_flat.view(prob_mask.size())
+    elif strategy == "instance":
+        conf_mask = torch.abs(prob_mask_dup - 0.5)
+        conf_mask_inst = torch.sum(conf_mask, dim=0) / torch.count_nonzero(conf_mask, dim=0)
+
+        k = int(rate * prob_mask.size(1))
+        v, i = torch.topk(conf_mask_inst, k)
+        res = torch.full(prob_mask.size(), -1.)
+        res[:, i] = prob_mask[:, i]
+        res[algn_mask == 0] = -1.
+    else: 
+        raise NotImplementedError
+
     return res
 
 def same_label(prob_a, prob_b):
@@ -951,10 +969,17 @@ def test_top_k_idxs_multid():
 
 def test_get_top_k_prob_mask():
     prob_mask = torch.tensor([[0.7, 0.4], [0.1, 0.5]])
-    top_k_prob_mask = get_top_k_prob_mask(prob_mask, 2)
+    algn_mask = torch.ones(2, 2)
+    rate = 0.5
+    top_k_prob_mask = get_top_k_prob_mask(prob_mask, algn_mask, rate)
     expected = torch.tensor([[0.7, -1.], [0.1, -1.]])
-    print(expected.type())
-    print(top_k_prob_mask.type())
+    assert torch.equal(top_k_prob_mask, expected), f"{top_k_prob_mask} != {expected}"
+
+    prob_mask = torch.tensor([[0.7, 0.4], [0.1, 0.45]])
+    algn_mask = torch.ones(2, 2)
+    rate = 0.5
+    top_k_prob_mask = get_top_k_prob_mask(prob_mask, algn_mask, rate, strategy="instance")
+    expected = torch.tensor([[0.7, -1.], [0.1, -1.]])
     assert torch.equal(top_k_prob_mask, expected), f"{top_k_prob_mask} != {expected}"
 
 def test_prfscore():
@@ -1007,12 +1032,12 @@ if __name__ == "__main__":
     # test_score_hard_rationale_predictions()
     # test_top_k_idxs_multid()
     # test_prfscore()
-    # test_get_top_k_prob_mask()
+    test_get_top_k_prob_mask()
     # test_get_wordpiece_embeddings()
     # test_get_token_embeddings()
-    test_same_label()
-    test_prob_to_conf()
-    test_higher_conf()
+    # test_same_label()
+    # test_prob_to_conf()
+    # test_higher_conf()
     print("Unit tests passed!")
 
 
