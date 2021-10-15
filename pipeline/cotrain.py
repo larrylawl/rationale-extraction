@@ -99,13 +99,7 @@ def compute_top_k_prob_mask(gen, ds, algn_mask, args, config):
             running_scalar_metrics += torch.tensor([tok_p, tok_r, tok_f1])
 
         # label top k% of most confident tokens
-        prob_mask_dup = prob_mask.clone()
-        prob_mask_dup[algn_mask == 0] = 0.5 # ensure that tokens with no alignment (including padding) are not selected
-
-        total_tokens = torch.count_nonzero(algn_mask)
-        k = math.ceil(config["cotrain"]["rate"] * total_tokens)
-        top_k_prob_mask = get_top_k_prob_mask(prob_mask_dup, k)# (max_tokens, trg_size)
-        del prob_mask_dup
+        top_k_prob_mask = get_top_k_prob_mask(prob_mask, algn_mask, config["cotrain"]["rate"], strategy="token")# (max_tokens, trg_size)
 
         # perfect labelling instead
         if config["cotrain"]["perfect"]: 
@@ -195,10 +189,18 @@ def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, src_algn_mask, tgt_algn_mask, args
 
     tgt_top_k_pred = (tgt_top_k_prob_mask[tgt_top_k_prob_mask != -1] > 0.5).float()
     tgt_p, tgt_r, tgt_f1 = PRFScore(average="binary")(tgt_r_mask[tgt_top_k_prob_mask != -1], tgt_top_k_pred)
+    
+    src_eg_idx = torch.unique((src_top_k_prob_mask + 1).nonzero(as_tuple = True)[1])
+    src_eg_pn = len(src_eg_idx) / src_top_k_prob_mask.size(1)
+
+    tgt_eg_idx = torch.unique((tgt_top_k_prob_mask + 1).nonzero(as_tuple = True)[1])
+    tgt_eg_pn = len(tgt_eg_idx) / tgt_top_k_prob_mask.size(1)
+
     overall_scalar_metrics = {
         "src_top_k_p": src_p, "src_top_k_r": src_r, "src_top_k_f1": src_f1,
         "tgt_top_k_p": tgt_p, "tgt_top_k_r": tgt_r, "tgt_top_k_f1": tgt_f1,
-        "denied_labels": denied_labels / (len(src_idxs) + len(tgt_idxs)), "success_labels_pn": success_labels / (len(src_idxs) + len(tgt_idxs))
+        "denied_labels": denied_labels / (len(src_idxs) + len(tgt_idxs)), "success_labels_pn": success_labels / (len(src_idxs) + len(tgt_idxs)),
+        "src_eg_pn": src_eg_pn, "tgt_eg_pn": tgt_eg_pn
     }
     logger.info(overall_scalar_metrics)
 
@@ -236,7 +238,7 @@ def main():
     embedding_model.eval()  # only extracting pre-trained embeddings
 
     # setting up datasets
-    if os.path.exists(os.path.join(args.src_lab_data_dir, "src_l_feats.pkl")):
+    if os.path.exists(os.path.join(args.src_lab_data_dir, "src_l_feats.pkl")) and os.path.exists(os.path.join(args.src_unlab_data_dir, "src_ul_feats.pkl")):
         logger.info("Loading cached features")
         src_l_feats = torch.load(os.path.join(args.src_lab_data_dir, "src_l_feats.pkl"))
         src_ul_feats = torch.load(os.path.join(args.src_unlab_data_dir, "src_ul_feats.pkl"))
