@@ -309,9 +309,8 @@ def main():
     for co_t in range(config["cotrain"]["epochs"]):
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
         # updates train datasets with new cotrain masks
-        rate = max(config["cotrain"]["rate"] * (1 + co_t), 1)
+        rate = min(config["cotrain"]["rate"] * (1 + co_t), 1)
         src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device)
-        exit(1)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
 
@@ -338,7 +337,7 @@ def main():
             best_src_gen.load_state_dict(src_gen.state_dict())
         if tgt_best_val_scalar_metrics > co_best_tgt_val_metrics:
             co_best_tgt_val_metrics = tgt_best_val_scalar_metrics
-            best_tgt_gen.load_state_dict(tgt_gen)
+            best_tgt_gen.load_state_dict(tgt_gen.state_dict())
         
         # co-train early stopping
         val_target_metric = src_best_val_scalar_metrics + tgt_best_val_scalar_metrics

@@ -25,6 +25,5 @@ for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
         --config $config \
         --out_dir $out_dir/$i \
         --seed $(( 100 + $i ))
-        # --overwrite_cache
         # --tune_hp
 done
