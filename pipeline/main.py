@@ -86,7 +86,7 @@ def main():
 
 
     logger.info("Evaluating best model on test set")
-    test_scalar_metrics = test(test_dl, enc, gen, split="test")
+    test_scalar_metrics = test(test_dl, enc, gen, config, split="test")
     for tag, val in test_scalar_metrics.items(): 
         writer.add_scalar(tag, val)
 

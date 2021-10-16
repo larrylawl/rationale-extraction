@@ -11,6 +11,7 @@ from torch import Tensor
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
+import torch.nn.functional as F
 from tqdm import tqdm
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
@@ -23,13 +24,13 @@ from models.generator import Generator
 class EraserDataset(Dataset):
     """ ERASER dataset. """
 
-    def __init__(self, anns, tokenizer, embedding_model, is_labelled, evd_ratio = 0.1, cotrain_mask=None):
+    def __init__(self, anns, tokenizer, embedding_model, is_labelled, max_tokens=113, cotrain_mask=None):
         self.anns: AnnotationFeature = anns
         self.tokenizer = tokenizer
         self.embedding_model = embedding_model
         self.cotrain_mask = cotrain_mask  # (max_tokens, N)
-        self.evd_ratio = evd_ratio  # 1.6 / 16 for e-snli, according to ERASER paper
         self.is_labelled = is_labelled
+        self.max_tokens = max_tokens
 
     def __len__(self):
         return len(self.anns)
@@ -38,9 +39,13 @@ class EraserDataset(Dataset):
         ann_id, t, r, l, algn = attrgetter("annotation_id", "text", "rationale", "label", "alignment")(self.anns[idx])
         t_e = get_token_embeddings(t, self.tokenizer, self.embedding_model)
         assert len(t_e) == len(r)
-        # if it's labelled, c_mask to take rationale labels instead.
-        # 
-        c_mask = self.cotrain_mask[:, idx] if not self.cotrain_mask is None else None
+
+        if self.is_labelled:  # labelled data 
+            c_mask = F.pad(r, (0, self.max_tokens - len(r)), value=-1)  # (max_tokens, 1)
+        elif not self.cotrain_mask is None:  # self-labelled data
+            c_mask = self.cotrain_mask[:, idx]  # (max_tokens, 1)
+        else:  # no labels (i.e. val or test)
+            c_mask = None
         return t_e, len(t_e), r, l, ann_id, c_mask
 
 @dataclass(eq=True)
@@ -140,7 +145,7 @@ def instantiate_encoder(config, device, fp=None):
     return enc
 
 def train(dataloader, enc, gen, optimizer, config, split="trg", weight_strategy="weighted"):
-    running_scalar_labels = ["loss", "obj_loss", "cont_loss", "sel_loss", "mask_sup_loss", "cotrain_sup_loss", "total_f1", "tok_p", "tok_r", "tok_f1"]
+    running_scalar_labels = ["loss", "obj_loss", "cont_loss", "sel_loss", "mask_sup_loss", "total_f1", "tok_p", "tok_r", "tok_f1"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     skipped_count = 0
 
@@ -171,41 +176,57 @@ def train(dataloader, enc, gen, optimizer, config, split="trg", weight_strategy=
         ## sel and cont loss
         selection_cost, continuity_cost = gen.loss(mask)
 
+        if config["cotrain"]["perfect"]: 
+            assert torch.equal(r_pad[(c_mask+1).nonzero(as_tuple=True)], c_mask[(c_mask+1).nonzero(as_tuple=True)]), f"{r_pad} != {c_mask}"
+        mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)]  # dim == 1
+        mask_y_prob = c_mask[c_mask != -1] # dim == 1 
+        mask_y_conf = prob_to_conf(mask_y_prob)
+        mask_y = (mask_y_prob > 0.5).float()
+        weight = mask_y_conf * torch.where(mask_y == 1, 1 - config["evd_ratio"], config["evd_ratio"])
+        lab_pn = len(mask_pred) / len((r_pad+1).nonzero())
+
+        if hasattr(dataloader.dataset, "is_labelled"):  
+            assert lab_pn == 1, "Vanilla supervised training should have all tokens labelled."
+        mask_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) * lab_pn
+        mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
+        
+
         ## sup rationale loss
-        if dataloader.dataset.is_labelled:
-            weight = r_pad.clone()
-            weight[weight == -1] = 0  # padding values
-            if weight_strategy == "default":
-                weight[weight == 0] = 1
-            elif weight_strategy == "weighted":
-                weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
-                weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
-            mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average
-            mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no labels
-            # print(f"loss: {nn.BCELoss(weight, reduction='sum')(mask, r_pad)}")
-            # print(torch.count_nonzero(weight))
-            # print(f"mask_sup_loss: {mask_sup_loss}")
-        else: mask_sup_loss = torch.tensor(0)
-
+        # if hasattr(dataloader.dataset, "is_labelled") and dataloader.dataset.is_labelled:
+        #     weight = r_pad.clone()
+        #     weight[weight == -1] = 0  # padding values
+        #     if weight_strategy == "default":
+        #         weight[weight == 0] = 1
+        #     elif weight_strategy == "weighted":
+        #         weight[weight == 1] = 1 - config["evd_ratio"]  # rationales
+        #         weight[weight == 0] = config["evd_ratio"]  # non rationales
+        #     mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average
+        #     mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no labels
+        #     # print(f"loss: {nn.BCELoss(weight, reduction='sum')(mask, r_pad)}")
+        #     # print(torch.count_nonzero(weight))
+        #     # print(f"mask_sup_loss: {mask_sup_loss}")
+        # else: mask_sup_loss = torch.tensor(0)
+        
         ## cotrain rationale loss
-        if not c_mask[0] == None:
-            # TODO: try scaling confidence to quadratic x^2
-            # NOTE: c_mask naturally won't select supervised labels
-            # only apply BCE on nonzero values of cotrain mask
-            if config["cotrain"]["perfect"]: 
-                assert torch.equal(r_pad[(c_mask+1).nonzero(as_tuple=True)], c_mask[(c_mask+1).nonzero(as_tuple=True)]), f"{r_pad} != {c_mask}"
-            mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)]  # dim == 1
-            mask_y_prob = c_mask[c_mask != -1] # dim == 1 
-            mask_y_conf = prob_to_conf(mask_y_prob)
-            mask_y = (mask_y_prob > 0.5).float()
-            weight = mask_y_conf * torch.where(mask_y == 1, 1 - dataloader.dataset.evd_ratio, dataloader.dataset.evd_ratio)
-            # total possible rationale: len(r_pad + 1.nonzero())
-            lab_pn = len(mask_pred) / len((r_pad+1).nonzero())
-            cotrain_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) * lab_pn
-            cotrain_sup_loss = torch.nan_to_num(cotrain_sup_loss)  # if no self-labels
-        else: cotrain_sup_loss = torch.tensor(0)
+        # if not c_mask[0] == None:
+        #     # TODO: try scaling confidence to quadratic x^2
+        #     # NOTE: c_mask naturally won't select supervised labels
+        #     # only apply BCE on nonzero values of cotrain mask
+        #     if config["cotrain"]["perfect"]: 
+        #         assert torch.equal(r_pad[(c_mask+1).nonzero(as_tuple=True)], c_mask[(c_mask+1).nonzero(as_tuple=True)]), f"{r_pad} != {c_mask}"
 
-        loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss + cotrain_sup_loss
+        #     mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)]  # dim == 1
+        #     mask_y_prob = c_mask[c_mask != -1] # dim == 1 
+        #     mask_y_conf = prob_to_conf(mask_y_prob)
+        #     mask_y = (mask_y_prob > 0.5).float()
+        #     weight = mask_y_conf * torch.where(mask_y == 1, 1 - config["evd_ratio"], config["evd_ratio"])
+        #     # total possible rationale: len(r_pad + 1.nonzero())
+        #     lab_pn = len(mask_pred) / len((r_pad+1).nonzero())
+        #     cotrain_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) * lab_pn
+        #     cotrain_sup_loss = torch.nan_to_num(cotrain_sup_loss)  # if no self-labels
+        # else: cotrain_sup_loss = torch.tensor(0)
+
+        loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
 
         if loss.item() == 0: 
             skipped_count += 1
@@ -217,7 +238,7 @@ def train(dataloader, enc, gen, optimizer, config, split="trg", weight_strategy=
         optimizer.step()
 
         # tracking metrics
-        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), continuity_cost.detach(), selection_cost.detach(), mask_sup_loss.detach(), cotrain_sup_loss.detach(), f1, tok_p, tok_r, tok_f1])            
+        running_scalar_metrics += torch.tensor([loss.detach(), obj_loss.detach(), continuity_cost.detach(), selection_cost.detach(), mask_sup_loss.detach(), f1, tok_p, tok_r, tok_f1])            
 
     total_scalar_metrics = running_scalar_metrics / ((batch + 1) - skipped_count)
     scalar_metrics = {}
@@ -225,7 +246,7 @@ def train(dataloader, enc, gen, optimizer, config, split="trg", weight_strategy=
 
     return enc, gen, scalar_metrics
 
-def test(dataloader, enc, gen, split="val"):
+def test(dataloader, enc, gen, config, split="val"):
     running_scalar_labels = [f"{split}_f1", f"{split}_tok_precision", f"{split}_tok_recall", f"{split}_tok_f1", f"{split}_mask_sup_loss"]
     running_scalar_metrics = torch.zeros(len(running_scalar_labels))
     
@@ -236,8 +257,8 @@ def test(dataloader, enc, gen, split="val"):
             mask = gen(t_e_pad, t_e_lens)
             mask_hard = (mask > 0.5).float()
             weight = r_pad.clone()
-            weight[weight == 1] = 1 - dataloader.dataset.evd_ratio  # rationales
-            weight[weight == 0] = dataloader.dataset.evd_ratio  # non rationales
+            weight[weight == 1] = 1 - config["evd_ratio"]  # rationales
+            weight[weight == 0] = config["evd_ratio"]  # non rationales
             weight[weight == -1] = 0  # padding values
             mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average )
             mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no labels
@@ -268,10 +289,11 @@ def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, out_dir, writ
 
     for t in range(config["train"]["num_epochs"]):
         logger.info(f"Epoch {t+1}\n-------------------------------")
+        # TODO: remove train unlabelled dataloader
         if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, config, split="trg_ul")
         else: train_ul_scalar_metrics = {}
         enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer, config)
-        val_scalar_metrics = test(val_dl, enc, gen)
+        val_scalar_metrics = test(val_dl, enc, gen, config)
         overall_scalar_metrics = {**train_scalar_metrics, **train_ul_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]
         scheduler.step(val_target_metric)

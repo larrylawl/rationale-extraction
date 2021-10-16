@@ -88,7 +88,7 @@ def compute_top_k_prob_mask(gen, ds, algn_mask, rate, args, config):
         prob_mask = torch.zeros(config["max_tokens"], len(dataloader.dataset))
         r_mask = torch.zeros(config["max_tokens"], len(dataloader.dataset))
         bs = config["train"]["batch_size"]
-        for batch, (t_e_pad, t_e_lens, r_pad, _, ann_ids, _) in enumerate(tqdm(dataloader)): 
+        for batch, (t_e_pad, t_e_lens, r_pad, _, _, _) in enumerate(tqdm(dataloader)): 
             mask = gen(t_e_pad, t_e_lens)  # (L, bs)
             assert mask.size() == r_pad.size()
 
@@ -349,8 +349,8 @@ def main():
 
     src_gen = instantiate_generator(config, device, best_src_gen_fp)
     tgt_gen = instantiate_generator(config, device, best_tgt_gen_fp)
-    co_src_test_scalar_metrics = test(src_test_dl, None, src_gen, split="src_test")
-    co_tgt_test_scalar_metrics = test(tgt_test_dl, None, tgt_gen, split="tgt_test")
+    co_src_test_scalar_metrics = test(src_test_dl, None, src_gen, config, split="src_test")
+    co_tgt_test_scalar_metrics = test(tgt_test_dl, None, tgt_gen, config, split="tgt_test")
     co_test_scalar_metrics = {**co_src_test_scalar_metrics, **co_tgt_test_scalar_metrics}
     for tag, val in co_test_scalar_metrics.items(): 
         co_writer.add_scalar(tag, val)
