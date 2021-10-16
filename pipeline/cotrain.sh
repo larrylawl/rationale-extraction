@@ -4,11 +4,12 @@ set -e
 lab_dataset_name=esnli_2000
 unlab_dataset_name=esnli_lightest
 exp_name=toy_exp
+root_data_dir=/temp/larry
 
-src_lab_data_dir=../data/esnli/$lab_dataset_name
-tgt_lab_data_dir=../data/esnli/${lab_dataset_name}_fr
-src_unlab_data_dir=../data/esnli/$unlab_dataset_name
-tgt_unlab_data_dir=../data/esnli/${unlab_dataset_name}_fr
+src_lab_data_dir=$root_data_dir/data/esnli/$lab_dataset_name
+tgt_lab_data_dir=$root_data_dir/data/esnli/${lab_dataset_name}_fr
+src_unlab_data_dir=$root_data_dir/data/esnli/$unlab_dataset_name
+tgt_unlab_data_dir=$root_data_dir/data/esnli/${unlab_dataset_name}_fr
 src_model_dir=../out/$lab_dataset_name/gen_only/partial_sup/0
 tgt_model_dir=../out/${lab_dataset_name}_fr/gen_only/partial_sup/0
 config=../models/config.json

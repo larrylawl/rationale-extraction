@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_2000
+dataset_name=esnli_lightest
 exp_name=toy_exp
 lab_data_dir=../data/esnli/$dataset_name
 config=../models/config.json
@@ -15,7 +15,5 @@ for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
         --config $config \
         --out_dir $out_dir/$i \
         --seed $(( 100 + $i )) \
-        --gen_only \
-        --test_mode \
-        --model_dir $model_dir 
+        --gen_only
 done

@@ -280,37 +280,31 @@ def main():
 
     dl_params = {"batch_size": config["train"]["batch_size"], "shuffle": True, "collate_fn": pad_collate}
     src_l_train_dl = DataLoader(EraserDataset(src_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
-    # src_ul_train_dl = DataLoader(EraserDataset(src_ul_feats[0], tokenizer, embedding_model, is_labelled=False), batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  
     src_val_dl = DataLoader(EraserDataset(src_l_feats[1]+src_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
     src_test_dl = DataLoader(EraserDataset(src_l_feats[2]+src_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
 
     tgt_l_train_dl = DataLoader(EraserDataset(tgt_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
-    # tgt_ul_train_dl = DataLoader(EraserDataset(tgt_ul_feats[0], tokenizer, embedding_model, is_labelled=False), batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  
     tgt_val_dl = DataLoader(EraserDataset(tgt_l_feats[1]+tgt_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
     tgt_test_dl = DataLoader(EraserDataset(tgt_l_feats[2]+tgt_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
     logger.info(f"after dataloaders: {time.time() - start_time}")
 
-    # instantiate models
-    src_gen = instantiate_generator(config, device, os.path.join(args.src_model_dir, "best_gen_weights.pth"))
-    tgt_gen = instantiate_generator(config, device, os.path.join(args.tgt_model_dir, "best_gen_weights.pth"))
-    best_src_gen = instantiate_generator(config, device, os.path.join(args.src_model_dir, "best_gen_weights.pth"))  # will be updated
-    best_tgt_gen = instantiate_generator(config, device, os.path.join(args.tgt_model_dir, "best_gen_weights.pth"))
 
-    # instantiate optimiser
-    src_optimizer = get_optimizer([src_gen], config["train"]["lr"])
-    tgt_optimizer = get_optimizer([tgt_gen], config["train"]["lr"])
-
+    best_src_gen_fp = os.path.join(args.src_model_dir, "best_gen_weights.pth")  # will be updated
+    best_tgt_gen_fp = os.path.join(args.tgt_model_dir, "best_gen_weights.pth")
     co_best_src_val_metrics = get_best_val_metrics(read_json(os.path.join(args.src_model_dir, "results.json")))
     co_best_tgt_val_metrics = get_best_val_metrics(read_json(os.path.join(args.tgt_model_dir, "results.json")))
-    co_best_val_target_metric = co_best_src_val_metrics + co_best_tgt_val_metrics
-    # co_epochs = math.ceil((1 - config["train"]["sup_pn"]) / (config["cotrain"]["rate"] * 2))  # NOTE: *2 since combining both src and tgt labels
     co_es_count = 0
     co_writer = SummaryWriter(args.out_dir)
     for co_t in range(config["cotrain"]["epochs"]):
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
         # updates train datasets with new cotrain masks
         rate = min(config["cotrain"]["rate"] * (1 + co_t), 1)
-        src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(best_src_gen, best_tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device)
+        src_gen = instantiate_generator(config, device, best_src_gen_fp)
+        tgt_gen = instantiate_generator(config, device, best_tgt_gen_fp)
+        src_optimizer = get_optimizer([src_gen], config["train"]["lr"])
+        tgt_optimizer = get_optimizer([tgt_gen], config["train"]["lr"])
+
+        src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
 
@@ -330,31 +324,31 @@ def main():
 
         src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)
         tgt_best_val_scalar_metrics = get_best_val_metrics(tgt_best_val_scalar_metrics)
-        
-        # saving best models
-        if src_best_val_scalar_metrics > co_best_src_val_metrics: 
-            co_best_src_val_metrics = src_best_val_scalar_metrics
-            best_src_gen.load_state_dict(src_gen.state_dict())
-        if tgt_best_val_scalar_metrics > co_best_tgt_val_metrics:
-            co_best_tgt_val_metrics = tgt_best_val_scalar_metrics
-            best_tgt_gen.load_state_dict(tgt_gen.state_dict())
-        
+
         # co-train early stopping
-        val_target_metric = src_best_val_scalar_metrics + tgt_best_val_scalar_metrics
-        if val_target_metric > co_best_val_target_metric: 
-            co_best_val_target_metric = val_target_metric
+        if src_best_val_scalar_metrics >= co_best_src_val_metrics or tgt_best_val_scalar_metrics >= co_best_tgt_val_metrics:
             co_es_count = 0
         else:
             co_es_count += 1
             if co_es_count >= config["cotrain"]["patience"]:
                 logger.info("Early stopping co-training!")
                 break
+        
+        # saving best models
+        if src_best_val_scalar_metrics > co_best_src_val_metrics: 
+            co_best_src_val_metrics = src_best_val_scalar_metrics
+            best_src_gen_fp = src_out_dir
+        if tgt_best_val_scalar_metrics > co_best_tgt_val_metrics:
+            co_best_tgt_val_metrics = tgt_best_val_scalar_metrics
+            best_tgt_gen_fp = tgt_out_dir
+        
         src_writer.close()
         tgt_writer.close()
 
-
-    co_src_test_scalar_metrics = test(src_test_dl, None, best_src_gen, split="src_test")
-    co_tgt_test_scalar_metrics = test(tgt_test_dl, None, best_tgt_gen, split="tgt_test")
+    src_gen = instantiate_generator(config, device, best_src_gen_fp)
+    tgt_gen = instantiate_generator(config, device, best_tgt_gen_fp)
+    co_src_test_scalar_metrics = test(src_test_dl, None, src_gen, split="src_test")
+    co_tgt_test_scalar_metrics = test(tgt_test_dl, None, tgt_gen, split="tgt_test")
     co_test_scalar_metrics = {**co_src_test_scalar_metrics, **co_tgt_test_scalar_metrics}
     for tag, val in co_test_scalar_metrics.items(): 
         co_writer.add_scalar(tag, val)
