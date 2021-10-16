@@ -14,7 +14,7 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 from tqdm import tqdm
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
-from utils import PRFScore, create_instance, get_token_embeddings, higher_conf, prob_to_conf, same_label, score_hard_rationale_predictions, Annotation, Evidence, generate_document_evidence_map, get_optimizer
+from utils import PRFScore, create_instance, get_token_embeddings, higher_conf, prob_to_conf, same_label, score_hard_rationale_predictions, Annotation, Evidence, generate_document_evidence_map, get_optimizer, write_json
 from models.encoder import Encoder
 from models.generator import Generator
 
@@ -295,6 +295,7 @@ def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, out_dir, writ
                 break
     gen.load_state_dict(torch.load(os.path.join(out_dir, "best_gen_weights.pth")))
     if enc is not None: torch.save(enc.state_dict(), os.path.join(out_dir, "best_enc_weights.pth"))
+    write_json(best_val_scalar_metrics, os.path.join(out_dir, "best_val_results.json"))
     logger.info("Done training!")
     return gen, enc, best_val_scalar_metrics
     

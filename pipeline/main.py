@@ -91,8 +91,7 @@ def main():
         writer.add_scalar(tag, val)
 
     test_scalar_metrics["total_time"] = str(datetime.timedelta(seconds=time.time() - start_time))
-    overall_scalar_metrics = {**test_scalar_metrics, **best_val_scalar_metrics}
-    write_json(overall_scalar_metrics, os.path.join(args.out_dir, "results.json"))
+    write_json(test_scalar_metrics, os.path.join(args.out_dir, "test_results.json"))
     writer.close()
 
 if __name__ == "__main__":
