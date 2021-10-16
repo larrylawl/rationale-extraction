@@ -282,7 +282,7 @@ def test(dataloader, enc, gen, config, split="val"):
 
         return scalar_metrics
 
-def train_loop(train_dl,  val_dl, gen, enc, optimizer, out_dir, writer, device, config, logger):
+def train_loop(train_dl, val_dl, gen, enc, optimizer, out_dir, writer, device, config, logger, train_ul_dl=None):
     # instantiate optimisers
     scheduler = ReduceLROnPlateau(optimizer, 'max', patience=2)
     best_val_target_metric = 0
@@ -290,11 +290,13 @@ def train_loop(train_dl,  val_dl, gen, enc, optimizer, out_dir, writer, device, 
     es_count = 0
 
     for t in range(config["train"]["num_epochs"]):
-        logger.info(f"Epoch {t+1}\n-------------------------------")
+        logger.info(f"Epoch {t}\n-------------------------------")
         # TODO: remove train unlabelled dataloader
+        if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, config)
+        else: train_ul_scalar_metrics = {}
         enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer, config)
         val_scalar_metrics = test(val_dl, enc, gen, config)
-        overall_scalar_metrics = {**train_scalar_metrics, **val_scalar_metrics}
+        overall_scalar_metrics = {**train_scalar_metrics, **train_ul_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]
         scheduler.step(val_target_metric)
 

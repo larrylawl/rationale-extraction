@@ -309,18 +309,22 @@ def main():
     best_tgt_gen_fp = os.path.join(args.tgt_model_dir, "best_gen_weights.pth")
     co_best_src_val_metrics = get_best_val_metrics(read_json(os.path.join(args.src_model_dir, "best_val_results.json")))
     co_best_tgt_val_metrics = get_best_val_metrics(read_json(os.path.join(args.tgt_model_dir, "best_val_results.json")))
+    logger.info(f"co_best_src_val_metrics: {co_best_src_val_metrics}")
+    logger.info(f"co_best_tgt_val_metrics: {co_best_tgt_val_metrics}")
     co_es_count = 0
     co_writer = SummaryWriter(args.out_dir)
     for co_t in range(config["cotrain"]["epochs"]):
-        logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
+        logger.info(f"Cotrain Epochs {co_t}\n-------------------------------")
         # updates train datasets with new cotrain masks
         src_gen = instantiate_generator(config, device, best_src_gen_fp)
         tgt_gen = instantiate_generator(config, device, best_tgt_gen_fp)
-        cur_lr = config["train"]["lr"] / (2 ** co_t)
+        # cur_lr = config["train"]["lr"] / (2 ** co_t)
+        cur_lr = config["train"]["lr"]
         src_optimizer = get_optimizer([src_gen], cur_lr)
         tgt_optimizer = get_optimizer([tgt_gen], cur_lr)
 
-        rate = min(2 * config["cotrain"]["rate"] * (1 - 0.5 ** (co_t + 1)), 1)  # sum of GP with a = rate, r = 0.5
+        # rate = min(2 * config["cotrain"]["rate"] * (1 - 0.5 ** (co_t + 1)), 1)  # sum of GP with a = rate, r = 0.5
+        rate = config["cotrain"]["rate"] * (co_t + 1)
         logger.info(f"rate: {rate}")
         src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_ul_ds[0], tgt_ul_ds[0], src_algn_mask, tgt_algn_mask, rate, args, config, device)
         for tag, val in cotrain_scalar_metrics.items():
@@ -331,25 +335,32 @@ def main():
         # fine-tuning C_k 
         src_out_dir = os.path.join(args.out_dir, f"src_{co_t}")
         src_writer = SummaryWriter(src_out_dir)
-        src_train_dl = DataLoader(ConcatDataset([src_l_ds[0], src_ul_train_ds]), **dl_params)
+        # src_train_dl = DataLoader(ConcatDataset([src_l_ds[0], src_ul_train_ds]), **dl_params)
+        src_train_l_dl = DataLoader(src_l_ds[0], **dl_params)
+        src_train_ul_dl = DataLoader(src_ul_train_ds, **dl_params)
+        src_gen, _, src_best_val_scalar_metrics = train_loop(src_train_l_dl, src_val_dl, src_gen, None, src_optimizer, 
+                    src_out_dir, src_writer, device, config, logger, src_train_ul_dl)
         
         tgt_out_dir = os.path.join(args.out_dir, f"tgt_{co_t}")
         tgt_writer = SummaryWriter(tgt_out_dir)
-        tgt_train_dl = DataLoader(ConcatDataset([tgt_l_ds[0], tgt_ul_train_ds]), **dl_params)
-        
-        src_gen, _, src_best_val_scalar_metrics = train_loop(src_train_dl, src_val_dl, src_gen, None, src_optimizer, 
-                    src_out_dir, src_writer, device, config, logger)
-        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
-                    tgt_out_dir, tgt_writer, device, config, logger)
+        # tgt_train_dl = DataLoader(ConcatDataset([tgt_l_ds[0], tgt_ul_train_ds]), **dl_params)
+        tgt_train_l_dl = DataLoader(tgt_l_ds[0], **dl_params)
+        tgt_train_ul_dl = DataLoader(tgt_ul_train_ds, **dl_params)
+        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_train_l_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
+                    tgt_out_dir, tgt_writer, device, config, logger, tgt_train_ul_dl)
 
         src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)
         tgt_best_val_scalar_metrics = get_best_val_metrics(tgt_best_val_scalar_metrics)
 
         # co-train early stopping
+        logger.info(f"src_best_val_scalar_metrics: {src_best_val_scalar_metrics}")
+        logger.info(f"co_best_src_val_metrics: {co_best_src_val_metrics}")
+        logger.info(f"tgt_best_val_scalar_metrics: {tgt_best_val_scalar_metrics}")
+        logger.info(f"co_best_tgt_val_metrics: {co_best_tgt_val_metrics}")
         if src_best_val_scalar_metrics >= co_best_src_val_metrics or tgt_best_val_scalar_metrics >= co_best_tgt_val_metrics:
             co_es_count = 0
         else:
-            co_es_count += 1
+            co_es_count += 1    
             if co_es_count >= config["cotrain"]["patience"]:
                 logger.info("Early stopping co-training!")
                 break
@@ -357,10 +368,10 @@ def main():
         # saving best models
         if src_best_val_scalar_metrics > co_best_src_val_metrics: 
             co_best_src_val_metrics = src_best_val_scalar_metrics
-            best_src_gen_fp = src_out_dir
+            best_src_gen_fp = os.path.join(src_out_dir, "best_gen_weights.pth")
         if tgt_best_val_scalar_metrics > co_best_tgt_val_metrics:
             co_best_tgt_val_metrics = tgt_best_val_scalar_metrics
-            best_tgt_gen_fp = tgt_out_dir
+            best_tgt_gen_fp = os.path.join(tgt_out_dir, "best_gen_weights.pth")
         
         src_writer.close()
         tgt_writer.close()

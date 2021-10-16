@@ -31,13 +31,13 @@
     "train": {
         "num_epochs": 20,
         "patience": 5,
-        "lr": 1e-3,
+        "lr": 1e-4,
         "batch_size": 64
     },
     "cotrain": {
         "perfect": true,
         "rate": 0.1,
         "patience": 1,
-        "epochs": 3
+        "epochs": 1
     }
 }
