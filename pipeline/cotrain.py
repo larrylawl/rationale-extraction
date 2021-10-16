@@ -298,12 +298,14 @@ def main():
     for co_t in range(config["cotrain"]["epochs"]):
         logger.info(f"Cotrain Epochs {co_t+1}\n-------------------------------")
         # updates train datasets with new cotrain masks
-        rate = min(config["cotrain"]["rate"] * (1 + co_t), 1)
         src_gen = instantiate_generator(config, device, best_src_gen_fp)
         tgt_gen = instantiate_generator(config, device, best_tgt_gen_fp)
-        src_optimizer = get_optimizer([src_gen], config["train"]["lr"])
-        tgt_optimizer = get_optimizer([tgt_gen], config["train"]["lr"])
+        cur_lr = config["train"]["lr"] / (2 ** co_t)
+        src_optimizer = get_optimizer([src_gen], cur_lr)
+        tgt_optimizer = get_optimizer([tgt_gen], cur_lr)
 
+        rate = min(20 * (1 - (0.5 ** co_t)), 1)  # sum of GP with a = 1, r = 0.5
+        # rate = min(config["cotrain"]["rate"] * (1 + co_t), 1)
         src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)

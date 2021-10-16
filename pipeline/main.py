@@ -72,7 +72,7 @@ def main():
     train_dl, val_dl, test_dl = [DataLoader(ds, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate) for ds in all_ds]
 
     # instantiate models
-    gen = instantiate_generator(config, device, os.path.join(args.model_dir, "best_gen_weights.pth")) if args.test_mode else instantiate_generator(config, device)
+    gen = instantiate_generator(config, device, os.path.join(args.model_dir, "best_gen_weights.pth")) if args.model_dir else instantiate_generator(config, device)
     enc = None if args.gen_only else instantiate_encoder(config, device)
 
     # instantiate optimiser

@@ -38,7 +38,8 @@ class EraserDataset(Dataset):
         ann_id, t, r, l, algn = attrgetter("annotation_id", "text", "rationale", "label", "alignment")(self.anns[idx])
         t_e = get_token_embeddings(t, self.tokenizer, self.embedding_model)
         assert len(t_e) == len(r)
-        # t_e, r, l, ann_id = create_instance(self.anns[idx], self.docs, self.tokenizer, self.embedding_model, self.logger)
+        # if it's labelled, c_mask to take rationale labels instead.
+        # 
         c_mask = self.cotrain_mask[:, idx] if not self.cotrain_mask is None else None
         return t_e, len(t_e), r, l, ann_id, c_mask
 
