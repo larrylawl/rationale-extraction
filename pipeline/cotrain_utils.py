@@ -24,7 +24,7 @@ from models.generator import Generator
 class EraserDataset(Dataset):
     """ ERASER dataset. """
 
-    def __init__(self, anns, tokenizer, embedding_model, is_labelled, max_tokens=113, cotrain_mask=None):
+    def __init__(self, anns, tokenizer, embedding_model, is_labelled=None, max_tokens=113, cotrain_mask=None):
         self.anns: AnnotationFeature = anns
         self.tokenizer = tokenizer
         self.embedding_model = embedding_model
@@ -40,12 +40,14 @@ class EraserDataset(Dataset):
         t_e = get_token_embeddings(t, self.tokenizer, self.embedding_model)
         assert len(t_e) == len(r)
 
-        if self.is_labelled:  # labelled data 
+        if self.is_labelled == True:  # labelled data 
             c_mask = F.pad(r, (0, self.max_tokens - len(r)), value=-1)  # (max_tokens, 1)
-        elif not self.cotrain_mask is None:  # self-labelled data
-            c_mask = self.cotrain_mask[:, idx]  # (max_tokens, 1)
-        else:  # no labels (i.e. val or test)
+        elif self.is_labelled == False:   # self-labelled data
+            c_mask = self.cotrain_mask[:, idx] if not self.cotrain_mask is None else None # (max_tokens, 1)
+        elif self.is_labelled == None:  # no labels (i.e. val or test)
             c_mask = None
+        else:
+            raise ValueError
         return t_e, len(t_e), r, l, ann_id, c_mask
 
 @dataclass(eq=True)
@@ -280,7 +282,7 @@ def test(dataloader, enc, gen, config, split="val"):
 
         return scalar_metrics
 
-def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, out_dir, writer, device, config, logger):
+def train_loop(train_dl,  val_dl, gen, enc, optimizer, out_dir, writer, device, config, logger):
     # instantiate optimisers
     scheduler = ReduceLROnPlateau(optimizer, 'max', patience=2)
     best_val_target_metric = 0
@@ -290,11 +292,9 @@ def train_loop(train_dl, train_ul_dl, val_dl, gen, enc, optimizer, out_dir, writ
     for t in range(config["train"]["num_epochs"]):
         logger.info(f"Epoch {t+1}\n-------------------------------")
         # TODO: remove train unlabelled dataloader
-        if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, config, split="trg_ul")
-        else: train_ul_scalar_metrics = {}
         enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer, config)
         val_scalar_metrics = test(val_dl, enc, gen, config)
-        overall_scalar_metrics = {**train_scalar_metrics, **train_ul_scalar_metrics, **val_scalar_metrics}
+        overall_scalar_metrics = {**train_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]
         scheduler.step(val_target_metric)
 

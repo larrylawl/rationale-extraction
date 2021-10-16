@@ -12,7 +12,7 @@ from multiprocessing import Pool
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader, Dataset, ConcatDataset
+from torch.utils.data import DataLoader, Dataset, ConcatDataset, Subset
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 import argparse
@@ -127,6 +127,8 @@ def compute_top_k_prob_mask(gen, ds, algn_mask, rate, args, config):
 def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
     """ Augments ds with self-labels. """
 
+    src_ds.cotrain_mask = None
+    tgt_ds.cotrain_mask = None
 
     # src_future = torch.jit.fork(compute_top_k_prob_mask, src_gen, src_train_dataset, src_algn_mask, rate)
     # tgt_future = torch.jit.fork(compute_top_k_prob_mask, tgt_gen, tgt_train_dataset, tgt_algn_mask, rate)
@@ -208,10 +210,13 @@ def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, src_algn_mask, tgt_algn_mask, rate
     assert src_top_k_prob_mask.size(1) == len(src_ds), f"Col i of prob mask corresponds to self labels for ith annotation. {len(src_top_k_prob_mask)} != {len(src_train_dataset)}"
     assert tgt_top_k_prob_mask.size(1) == len(tgt_ds), f"Col i of prob mask corresponds to self labels for ith annotation. {len(tgt_top_k_prob_mask)} != {len(tgt_train_dataset)}"
     assert src_top_k_prob_mask.size() == tgt_top_k_prob_mask.size()
+
     src_ds.cotrain_mask = src_top_k_prob_mask.to(device)
     tgt_ds.cotrain_mask = tgt_top_k_prob_mask.to(device)
+    src_subset_ds = Subset(src_ds, src_eg_idx)
+    tgt_subset_ds = Subset(tgt_ds, tgt_eg_idx)
 
-    return src_ds, tgt_ds, overall_scalar_metrics
+    return src_subset_ds, tgt_subset_ds, overall_scalar_metrics
 
 def main():
     start_time = time.time()
@@ -275,24 +280,35 @@ def main():
 
     # create train dataloader later
     # NOTE: for train, need to indicate which are sup since we'll be labelling other examples too
-    src_ul_train_ds = EraserDataset(src_ul_feats[0], tokenizer, embedding_model, is_labelled=False)
-    tgt_ul_train_ds = EraserDataset(tgt_ul_feats[0], tokenizer, embedding_model, is_labelled=False)
+    src_l_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in src_l_feats]
+    src_ul_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in src_ul_feats]
+    tgt_l_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in tgt_l_feats]
+    tgt_ul_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in tgt_ul_feats]
+    src_l_ds[0].is_labelled = True
+    src_ul_ds[0].is_labelled = False
+    tgt_l_ds[0].is_labelled = True
+    tgt_ul_ds[0].is_labelled = False
 
+    # tgt_ul_train_ds = EraserDataset(tgt_ul_feats[0], tokenizer, embedding_model, is_labelled=False)
     dl_params = {"batch_size": config["train"]["batch_size"], "shuffle": True, "collate_fn": pad_collate}
-    src_l_train_dl = DataLoader(EraserDataset(src_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
-    src_val_dl = DataLoader(EraserDataset(src_l_feats[1]+src_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
-    src_test_dl = DataLoader(EraserDataset(src_l_feats[2]+src_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
+    src_val_dl = DataLoader(ConcatDataset([src_l_ds[1], src_ul_ds[1]]), **dl_params)
+    src_test_dl = DataLoader(ConcatDataset([src_l_ds[2], src_ul_ds[2]]), **dl_params)
+    tgt_val_dl = DataLoader(ConcatDataset([tgt_l_ds[1], tgt_ul_ds[1]]), **dl_params)
+    tgt_test_dl = DataLoader(ConcatDataset([tgt_l_ds[2], tgt_ul_ds[2]]), **dl_params)
 
-    tgt_l_train_dl = DataLoader(EraserDataset(tgt_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
-    tgt_val_dl = DataLoader(EraserDataset(tgt_l_feats[1]+tgt_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
-    tgt_test_dl = DataLoader(EraserDataset(tgt_l_feats[2]+tgt_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
+    # src_l_train_dl = DataLoader(EraserDataset(src_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
+    # src_val_dl = DataLoader(EraserDataset(src_l_feats[1]+src_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
+    # src_test_dl = DataLoader(EraserDataset(src_l_feats[2]+src_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
+
+    # tgt_l_train_dl = DataLoader(EraserDataset(tgt_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
+    # tgt_val_dl = DataLoader(EraserDataset(tgt_l_feats[1]+tgt_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
+    # tgt_test_dl = DataLoader(EraserDataset(tgt_l_feats[2]+tgt_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
     logger.info(f"after dataloaders: {time.time() - start_time}")
-
 
     best_src_gen_fp = os.path.join(args.src_model_dir, "best_gen_weights.pth")  # will be updated
     best_tgt_gen_fp = os.path.join(args.tgt_model_dir, "best_gen_weights.pth")
-    co_best_src_val_metrics = get_best_val_metrics(read_json(os.path.join(args.src_model_dir, "results.json")))
-    co_best_tgt_val_metrics = get_best_val_metrics(read_json(os.path.join(args.tgt_model_dir, "results.json")))
+    co_best_src_val_metrics = get_best_val_metrics(read_json(os.path.join(args.src_model_dir, "best_val_results.json")))
+    co_best_tgt_val_metrics = get_best_val_metrics(read_json(os.path.join(args.tgt_model_dir, "best_val_results.json")))
     co_es_count = 0
     co_writer = SummaryWriter(args.out_dir)
     for co_t in range(config["cotrain"]["epochs"]):
@@ -304,24 +320,26 @@ def main():
         src_optimizer = get_optimizer([src_gen], cur_lr)
         tgt_optimizer = get_optimizer([tgt_gen], cur_lr)
 
-        rate = min(20 * (1 - (0.5 ** co_t)), 1)  # sum of GP with a = 1, r = 0.5
-        # rate = min(config["cotrain"]["rate"] * (1 + co_t), 1)
-        src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_ul_train_ds, tgt_ul_train_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device)
+        rate = min(2 * config["cotrain"]["rate"] * (1 - 0.5 ** (co_t + 1)), 1)  # sum of GP with a = rate, r = 0.5
+        logger.info(f"rate: {rate}")
+        src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_ul_ds[0], tgt_ul_ds[0], src_algn_mask, tgt_algn_mask, rate, args, config, device)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
+        co_writer.add_scalar("rate", rate, co_t)
+        co_writer.add_scalar("lr", cur_lr, co_t)
 
         # fine-tuning C_k 
         src_out_dir = os.path.join(args.out_dir, f"src_{co_t}")
         src_writer = SummaryWriter(src_out_dir)
-        src_ul_train_dl = DataLoader(src_ul_train_ds, **dl_params)
+        src_train_dl = DataLoader(ConcatDataset([src_l_ds[0], src_ul_train_ds]), **dl_params)
         
         tgt_out_dir = os.path.join(args.out_dir, f"tgt_{co_t}")
         tgt_writer = SummaryWriter(tgt_out_dir)
-        tgt_ul_train_dl = DataLoader(src_ul_train_ds, **dl_params)
+        tgt_train_dl = DataLoader(ConcatDataset([tgt_l_ds[0], tgt_ul_train_ds]), **dl_params)
         
-        src_gen, _, src_best_val_scalar_metrics = train_loop(src_l_train_dl, src_ul_train_dl, src_val_dl, src_gen, None, src_optimizer, 
+        src_gen, _, src_best_val_scalar_metrics = train_loop(src_train_dl, src_val_dl, src_gen, None, src_optimizer, 
                     src_out_dir, src_writer, device, config, logger)
-        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_l_train_dl, tgt_ul_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
+        tgt_gen, _, tgt_best_val_scalar_metrics = train_loop(tgt_train_dl, tgt_val_dl, tgt_gen, None, tgt_optimizer, 
                     tgt_out_dir, tgt_writer, device, config, logger)
 
         src_best_val_scalar_metrics = get_best_val_metrics(src_best_val_scalar_metrics)

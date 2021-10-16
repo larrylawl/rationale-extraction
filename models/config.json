@@ -1,6 +1,7 @@
 {
     "embedding_model_name": "bert-base-multilingual-cased",
     "max_tokens": 113,
+    "evd_ratio": 0.1,
     "generator": {
         "lstm": {
             "input_size": 3072,
@@ -30,11 +31,11 @@
     "train": {
         "num_epochs": 20,
         "patience": 5,
-        "lr": 1e-4,
+        "lr": 1e-3,
         "batch_size": 64
     },
     "cotrain": {
-        "perfect": false,
+        "perfect": true,
         "rate": 0.1,
         "patience": 1,
         "epochs": 3

@@ -68,7 +68,8 @@ def main():
     # TODO: change to tensor dataset to avoid expensive zipping operation of pad_collate
     documents: Dict[str, str] = load_documents(args.lab_data_dir, docids=None)
     feats = create_datasets_features(load_datasets(args.lab_data_dir), documents, device)
-    all_ds = [EraserDataset(feat, tokenizer, embedding_model, is_labelled=True) for feat in feats]
+    all_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in feats]
+    all_ds[0].is_labelled = True
     train_dl, val_dl, test_dl = [DataLoader(ds, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate) for ds in all_ds]
 
     # instantiate models
@@ -80,9 +81,8 @@ def main():
         optimizer = get_optimizer([gen, enc], config["train"]["lr"])
 
         # training
-        gen, enc, best_val_scalar_metrics = train_loop(train_dl, None, val_dl, gen, enc, optimizer, \
+        gen, enc, _ = train_loop(train_dl, val_dl, gen, enc, optimizer, \
                                                         args.out_dir, writer, device, config, logger)
-    else: best_val_scalar_metrics = {}
 
 
     logger.info("Evaluating best model on test set")
