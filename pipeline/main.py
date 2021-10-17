@@ -66,8 +66,14 @@ def main():
 
     # setting up data
     # TODO: change to tensor dataset to avoid expensive zipping operation of pad_collate
-    documents: Dict[str, str] = load_documents(args.lab_data_dir, docids=None)
-    feats = create_datasets_features(load_datasets(args.lab_data_dir), documents, device)
+    if os.path.exists(os.path.join(args.lab_data_dir, "l_feats.pkl")):
+        logger.info("Loading cached features")
+        feats = torch.load(os.path.join(args.lab_data_dir, "l_feats.pkl"))
+    else:
+        logger.info("Caching features")
+        documents: Dict[str, str] = load_documents(args.lab_data_dir, docids=None)
+        feats = create_datasets_features(load_datasets(args.lab_data_dir), documents, device)
+        torch.save(feats, os.path.join(args.lab_data_dir, "l_feats.pkl"))
     all_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in feats]
     all_ds[0].is_labelled = True
     train_dl, val_dl, test_dl = [DataLoader(ds, batch_size=config["train"]["batch_size"], shuffle=True, collate_fn=pad_collate) for ds in all_ds]

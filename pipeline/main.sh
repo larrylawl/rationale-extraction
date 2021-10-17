@@ -2,7 +2,7 @@
 set -e
 
 dataset_name=esnli
-exp_name=gen_only/vanilla
+exp_name=gen_only/sup
 root_data_dir=/temp/larry
 lab_data_dir=$root_data_dir/data/esnli/$dataset_name
 config=../models/config.json
