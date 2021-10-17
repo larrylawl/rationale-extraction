@@ -191,7 +191,6 @@ def train(dataloader, enc, gen, optimizer, config, split="trg", weight_strategy=
             assert lab_pn == 1, "Vanilla supervised training should have all tokens labelled."
         mask_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) * lab_pn
         mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
-        
 
         ## sup rationale loss
         # if hasattr(dataloader.dataset, "is_labelled") and dataloader.dataset.is_labelled:
@@ -292,9 +291,9 @@ def train_loop(train_dl, val_dl, gen, enc, optimizer, out_dir, writer, device, c
     for t in range(config["train"]["num_epochs"]):
         logger.info(f"Epoch {t}\n-------------------------------")
         # TODO: remove train unlabelled dataloader
-        if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, config)
+        if train_ul_dl: enc, gen, train_ul_scalar_metrics = train(train_ul_dl, enc, gen, optimizer, config, split="trg_ul")
         else: train_ul_scalar_metrics = {}
-        enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer, config)
+        enc, gen, train_scalar_metrics = train(train_dl, enc, gen, optimizer, config, split="trg_l")
         val_scalar_metrics = test(val_dl, enc, gen, config)
         overall_scalar_metrics = {**train_scalar_metrics, **train_ul_scalar_metrics, **val_scalar_metrics}
         val_target_metric = overall_scalar_metrics["val_f1"] + overall_scalar_metrics["val_tok_f1"]

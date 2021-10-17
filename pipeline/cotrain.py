@@ -309,8 +309,6 @@ def main():
     best_tgt_gen_fp = os.path.join(args.tgt_model_dir, "best_gen_weights.pth")
     co_best_src_val_metrics = get_best_val_metrics(read_json(os.path.join(args.src_model_dir, "best_val_results.json")))
     co_best_tgt_val_metrics = get_best_val_metrics(read_json(os.path.join(args.tgt_model_dir, "best_val_results.json")))
-    logger.info(f"co_best_src_val_metrics: {co_best_src_val_metrics}")
-    logger.info(f"co_best_tgt_val_metrics: {co_best_tgt_val_metrics}")
     co_es_count = 0
     co_writer = SummaryWriter(args.out_dir)
     for co_t in range(config["cotrain"]["epochs"]):
