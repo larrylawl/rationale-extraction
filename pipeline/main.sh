@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_2000_fr
-exp_name=gen_only/partial_sup_longer
+dataset_name=esnli_59431
+exp_name=gen_only/vanilla
 lab_data_dir=../data/esnli/$dataset_name
 config=../models/config.json
 out_dir=../out/$dataset_name/$exp_name
@@ -14,6 +14,5 @@ for ((i = 0; i < $repeat ; i++)); do   # forked if use ( &)
         --config $config \
         --out_dir $out_dir/$i \
         --seed $(( 100 + $i )) \
-        --gen_only \
-        --model_dir $model_dir
+        --gen_only
 done

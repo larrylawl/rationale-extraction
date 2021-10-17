@@ -303,7 +303,8 @@ def train_loop(train_dl, val_dl, gen, enc, optimizer, out_dir, writer, device, c
         for tag, val in overall_scalar_metrics.items():
             writer.add_scalar(tag, val, t)
         writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], t)
-        # del train_tensor_metrics
+
+        torch.save(gen.state_dict(), os.path.join(out_dir, f"gen_weights_{t}.pth"))
 
         # early stopping
         if val_target_metric > best_val_target_metric:
