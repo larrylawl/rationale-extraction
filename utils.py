@@ -551,7 +551,7 @@ def get_optimizer(models, lr=1e-3):
     for model in models:
         if model is None: continue
         params.extend([param for param in model.parameters() if param.requires_grad])
-    return torch.optim.Adam(params, lr=lr)
+    return torch.optim.Adam(params, lr=lr, amsgrad=True)
 
 def get_base_dataset_name(dataset_name):
     if "esnli" in dataset_name: return "esnli"

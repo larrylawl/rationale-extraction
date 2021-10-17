@@ -29,7 +29,7 @@
         }
     },
     "train": {
-        "num_epochs": 40,
+        "num_epochs": 20,
         "patience": 5,
         "lr": 1e-4,
         "batch_size": 64
