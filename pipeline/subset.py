@@ -100,7 +100,7 @@ if __name__ == "__main__":
             comp_tgt_sub_ds = [ann for j, ann in enumerate(tgt_all_ds[i]) if j not in ids]               
             annotations_to_jsonl(comp_src_sub_ds, os.path.join(args.src_split_opd, f"{split}.jsonl"))
             annotations_to_jsonl(comp_tgt_sub_ds, os.path.join(args.tgt_split_opd, f"{split}.jsonl"))
-            c_s_wa, c_s_s_d, c_t_s_d = get_sub_wa_and_docs(src_sub_ds, tgt_sub_ds, wa, src_docs, tgt_docs)
+            c_s_wa, c_s_s_d, c_t_s_d = get_sub_wa_and_docs(comp_src_sub_ds, comp_tgt_sub_ds, wa, src_docs, tgt_docs)
             comp_sub_wa.extend(c_s_wa)
             comp_src_sub_docs.extend(c_s_s_d)
             comp_tgt_sub_docs.extend(c_t_s_d)

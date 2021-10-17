@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-dataset_name=esnli_59431
+dataset_name=esnli
 exp_name=gen_only/vanilla
-lab_data_dir=../data/esnli/$dataset_name
+root_data_dir=/temp/larry
+lab_data_dir=$root_data_dir/data/esnli/$dataset_name
 config=../models/config.json
 out_dir=../out/$dataset_name/$exp_name
 repeat=1
