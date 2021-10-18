@@ -3,7 +3,7 @@ set -e
 
 lab_dataset_name=esnli_2000
 unlab_dataset_name=esnli_19000
-exp_name=cotrain/original
+exp_name=cotrain/grad_clip
 root_data_dir=/temp/larry
 
 src_lab_data_dir=$root_data_dir/data/esnli/$lab_dataset_name

@@ -32,7 +32,8 @@
         "num_epochs": 20,
         "patience": 5,
         "lr": 1e-4,
-        "batch_size": 64
+        "batch_size": 64,
+        "clip": 0.25
     },
     "cotrain": {
         "perfect": false,

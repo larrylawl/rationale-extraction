@@ -192,41 +192,6 @@ def train(dataloader, enc, gen, optimizer, config, split="trg", weight_strategy=
         mask_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) * lab_pn
         mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no self-labels
 
-        ## sup rationale loss
-        # if hasattr(dataloader.dataset, "is_labelled") and dataloader.dataset.is_labelled:
-        #     weight = r_pad.clone()
-        #     weight[weight == -1] = 0  # padding values
-        #     if weight_strategy == "default":
-        #         weight[weight == 0] = 1
-        #     elif weight_strategy == "weighted":
-        #         weight[weight == 1] = 1 - config["evd_ratio"]  # rationales
-        #         weight[weight == 0] = config["evd_ratio"]  # non rationales
-        #     mask_sup_loss = nn.BCELoss(weight, reduction="sum")(mask, r_pad) / torch.count_nonzero(weight)  # manual average
-        #     mask_sup_loss = torch.nan_to_num(mask_sup_loss)  # if no labels
-        #     # print(f"loss: {nn.BCELoss(weight, reduction='sum')(mask, r_pad)}")
-        #     # print(torch.count_nonzero(weight))
-        #     # print(f"mask_sup_loss: {mask_sup_loss}")
-        # else: mask_sup_loss = torch.tensor(0)
-        
-        ## cotrain rationale loss
-        # if not c_mask[0] == None:
-        #     # TODO: try scaling confidence to quadratic x^2
-        #     # NOTE: c_mask naturally won't select supervised labels
-        #     # only apply BCE on nonzero values of cotrain mask
-        #     if config["cotrain"]["perfect"]: 
-        #         assert torch.equal(r_pad[(c_mask+1).nonzero(as_tuple=True)], c_mask[(c_mask+1).nonzero(as_tuple=True)]), f"{r_pad} != {c_mask}"
-
-        #     mask_pred = mask[(c_mask + 1).nonzero(as_tuple=True)]  # dim == 1
-        #     mask_y_prob = c_mask[c_mask != -1] # dim == 1 
-        #     mask_y_conf = prob_to_conf(mask_y_prob)
-        #     mask_y = (mask_y_prob > 0.5).float()
-        #     weight = mask_y_conf * torch.where(mask_y == 1, 1 - config["evd_ratio"], config["evd_ratio"])
-        #     # total possible rationale: len(r_pad + 1.nonzero())
-        #     lab_pn = len(mask_pred) / len((r_pad+1).nonzero())
-        #     cotrain_sup_loss = nn.BCELoss(weight)(mask_pred, mask_y) * lab_pn
-        #     cotrain_sup_loss = torch.nan_to_num(cotrain_sup_loss)  # if no self-labels
-        # else: cotrain_sup_loss = torch.tensor(0)
-
         loss = obj_loss + selection_cost + continuity_cost + mask_sup_loss
 
         if loss.item() == 0: 
@@ -236,6 +201,8 @@ def train(dataloader, enc, gen, optimizer, config, split="trg", weight_strategy=
         # Backpropagation
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(gen.parameters(), config["train"]["clip"])
+        if enc: torch.nn.utils.clip_grad_norm_(enc.parameters(), config["train"]["clip"])
         optimizer.step()
 
         # tracking metrics
