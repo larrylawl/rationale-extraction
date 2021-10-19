@@ -12,11 +12,11 @@ def parse_args():
     parser.add_argument("--src_opd", required=True, help="Output directory of (train|val|test).jsonl.")
     parser.add_argument("--tgt_ipd", required=True, help="Input directory of (train|val|test).jsonl.")
     parser.add_argument("--tgt_opd", required=True, help="Output directory of (train|val|test).jsonl.")
-    parser.add_argument("--train_size", required=True)
-    parser.add_argument("--val_size", required=True)
-    parser.add_argument("--test_size", required=True)
+    parser.add_argument("--train_size", required=True, type=int)
+    parser.add_argument("--val_size", required=True, type=int, help="If none, take entire set")
+    parser.add_argument("--test_size", required=True, type=int)
     parser.add_argument("--seed", required=True, default=100)
-    parser.add_argument("--split", action="store_true", default=False, help="If true, will output the complement set as well.")
+    parser.add_argument("--split", action="store_true", default=False, help="If -1, will output the complement set as well.")
     parser.add_argument("--src_split_opd")
     parser.add_argument("--tgt_split_opd")
 
@@ -29,7 +29,7 @@ def get_sub_wa_and_docs(src_sub_ds, tgt_sub_ds, wa, src_docs, tgt_docs):
     for j in range(len(src_sub_ds)):
         src_ann_id = src_sub_ds[j].annotation_id
         tgt_ann_id = tgt_sub_ds[j].annotation_id
-        assert src_ann_id == tgt_ann_id
+        assert src_ann_id == tgt_ann_id, f"{src_ann_id} != {tgt_ann_id}"
         doc_ids = [f"{tgt_ann_id}_hypothesis", f"{tgt_ann_id}_premise"]
         for doc_id in doc_ids:
             sub_wa.append({"docid": doc_id, "alignment": wa[doc_id]["alignment"]})
@@ -82,9 +82,13 @@ if __name__ == "__main__":
     sizes = [args.train_size, args.val_size, args.test_size]
     splits = ["train", "val", "test"]
     for i, split in enumerate(splits):
-        ids = set(random.sample(range(0, len(src_all_ds[i])), int(sizes[i])))
-        src_sub_ds = [src_all_ds[i][id] for id in ids]
-        tgt_sub_ds = [tgt_all_ds[i][id] for id in ids]
+        if sizes[i] == -1:
+            src_sub_ds = src_all_ds[i]
+            tgt_sub_ds = tgt_all_ds[i]
+        else:
+            ids = set(random.sample(range(0, len(src_all_ds[i])), sizes[i]))
+            src_sub_ds = [src_all_ds[i][id] for id in ids]
+            tgt_sub_ds = [tgt_all_ds[i][id] for id in ids]
 
         annotations_to_jsonl(src_sub_ds, os.path.join(args.src_opd, f"{split}.jsonl"))
         annotations_to_jsonl(tgt_sub_ds, os.path.join(args.tgt_opd, f"{split}.jsonl"))
@@ -95,7 +99,7 @@ if __name__ == "__main__":
         tgt_sub_docs.extend(t_s_d)
 
         # do for complement set
-        if args.split:
+        if args.split and sizes[i] != -1:
             comp_src_sub_ds = [ann for j, ann in enumerate(src_all_ds[i]) if j not in ids]
             comp_tgt_sub_ds = [ann for j, ann in enumerate(tgt_all_ds[i]) if j not in ids]               
             annotations_to_jsonl(comp_src_sub_ds, os.path.join(args.src_split_opd, f"{split}.jsonl"))
