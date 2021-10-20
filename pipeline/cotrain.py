@@ -295,12 +295,12 @@ def main():
     if args.subset_val:
         val_shuffled_ids = torch.randperm(len(src_val_ds))
         val_size = math.floor(config["cotrain"]["instance_pn"] * len(src_val_ds))
-        test_shuffled_ids = torch.randperm(len(src_test_ds))
-        test_size = math.floor(config["cotrain"]["instance_pn"] * len(src_test_ds))
+        # test_shuffled_ids = torch.randperm(len(src_test_ds))
+        # test_size = math.floor(config["cotrain"]["instance_pn"] * len(src_test_ds))
         src_val_ds = Subset(src_val_ds, val_shuffled_ids[:val_size])
-        src_test_ds = Subset(src_test_ds, test_shuffled_ids[:test_size])
+        # src_test_ds = Subset(src_test_ds, test_shuffled_ids[:test_size])
         tgt_val_ds = Subset(tgt_val_ds, val_shuffled_ids[:val_size])
-        tgt_test_ds = Subset(tgt_test_ds, test_shuffled_ids[:test_size])
+        # tgt_test_ds = Subset(tgt_test_ds, test_shuffled_ids[:test_size])
 
     dl_params = {"batch_size": config["train"]["batch_size"], "shuffle": True, "collate_fn": pad_collate}
     src_val_dl = DataLoader(src_val_ds, **dl_params)
@@ -335,6 +335,7 @@ def main():
         logger.info(f"pn: {pn}")
         logger.info(f"size: {size}")
         src_ul_subfeats = [ann for i, ann in enumerate(src_ul_feats[0]) if i in shuffled_ids[:size]]
+        logger.info(f"after iterating")
         src_ul_subds = EraserDataset(src_ul_subfeats, tokenizer, embedding_model, is_labelled=False)
 
         tgt_ul_subfeats = [ann for i, ann in enumerate(tgt_ul_feats[0]) if i in shuffled_ids[:size]]

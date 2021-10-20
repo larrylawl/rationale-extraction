@@ -36,11 +36,10 @@
         "clip": 0.25
     },
     "cotrain": {
-        "perfect": false,
+        "perfect": true,
         "instance_pn": 0.1,
         "token_pn": 0.05,
         "patience": 1,
-        "epochs": 3
-
+        "epochs": 2
     }
 }
