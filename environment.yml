@@ -1,0 +1,56 @@
+# Larry Law
+
+name: cotraining
+
+dependencies:
+
+  # basic
+  - absl-py
+  - cachetools
+  - certifi
+  - charset-normalizer
+  - click
+  - cycler
+  - dataclasses
+  - filelock
+  - future
+  - google-auth
+  - google-auth-oauthlib
+  - grpcio
+  - idna
+  - importlib-metadata
+  - joblib
+  - kiwisolver
+  - Markdown
+  - matplotlib
+  - nltk
+  - numpy
+  - oauthlib
+  - packaging
+  - pandas
+  - Pillow
+  - protobuf
+  - pyasn1
+  - pyasn1-modules
+  - pyparsing
+  - python-dateutil
+  - pytz
+  - PyYAML
+  - regex
+  - requests
+  - requests-oauthlib
+  - rsa
+  - sacremoses
+  - scikit-learn
+  - scipy
+  - six
+  - tensorboard
+  - tensorboard-data-server
+  - tensorboard-plugin-wit
+  - threadpoolctl
+  - tqdm
+  - transformers
+  - typing-extensions
+  - urllib3
+  - Werkzeug
+  - zipp

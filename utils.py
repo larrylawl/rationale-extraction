@@ -156,9 +156,9 @@ def load_datasets(data_dir: str) -> Tuple[List[Annotation], List[Annotation], Li
     Each dataset is assumed to have been serialized by annotations_to_jsonl,
     that is it is a list of json-serialized Annotation instances.
     """
-    train_data = annotations_from_jsonl(os.path.join(data_dir, 'train.jsonl'))
-    val_data = annotations_from_jsonl(os.path.join(data_dir, 'val.jsonl'))
-    test_data = annotations_from_jsonl(os.path.join(data_dir, 'test.jsonl'))
+    train_data = annotations_from_jsonl(os.path.join(data_dir, 'train.jsonl')) if os.path.exists(os.path.join(data_dir, 'train.jsonl')) else []
+    val_data = annotations_from_jsonl(os.path.join(data_dir, 'val.jsonl')) if os.path.exists(os.path.join(data_dir, 'val.jsonl')) else []
+    test_data = annotations_from_jsonl(os.path.join(data_dir, 'test.jsonl')) if os.path.exists(os.path.join(data_dir, 'test.jsonl')) else []
     return train_data, val_data, test_data
 
 def load_documents(data_dir: str, docids: Set[str]=None) -> Dict[str, str]:
@@ -624,7 +624,7 @@ def top_k_idxs_multid(a, k):
     return res
 
 def get_top_k_prob_mask(prob_mask, algn_mask, rate, strategy="token"):
-    """ Returns new tensor with top k most confident elements in mask retained. Rest are -1. """
+    """ Returns new tensor with rate% tokens in mask retained. Rest are -1. """
     prob_mask_dup = prob_mask.clone()
     prob_mask_dup[algn_mask == 0] = 0.5 # ensure that tokens with no alignment (including padding) are not selected
 

@@ -29,6 +29,7 @@ def parse_args():
     parser.add_argument("--tune_hp", action="store_true")
     parser.add_argument("--gen_only", action="store_true", help="Supervised training with gen only")
     parser.add_argument("--test_mode", action="store_true")
+    parser.add_argument("--overwrite_cache", action="store_true")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -66,7 +67,7 @@ def main():
 
     # setting up data
     # TODO: change to tensor dataset to avoid expensive zipping operation of pad_collate
-    if os.path.exists(os.path.join(args.lab_data_dir, "l_feats.pkl")):
+    if not args.overwrite_cache and os.path.exists(os.path.join(args.lab_data_dir, "l_feats.pkl")):
         logger.info("Loading cached features")
         feats = torch.load(os.path.join(args.lab_data_dir, "l_feats.pkl"))
     else:

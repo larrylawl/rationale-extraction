@@ -49,6 +49,17 @@ class EraserDataset(Dataset):
         else:
             raise ValueError
         return t_e, len(t_e), r, l, ann_id, c_mask
+    
+    def get_algn_mask(self):
+        """ (i, j) indicates if the ith token of jth annotation has an alignment. 
+        """
+
+        algn_mask = torch.zeros(self.max_tokens, len(self.anns))
+        for i, ann in enumerate(self.anns):
+            for k in ann.alignment.keys(): algn_mask[k][i] = 1
+
+        return algn_mask
+
 
 @dataclass(eq=True)
 class AnnotationFeature:
@@ -271,7 +282,7 @@ def train_loop(train_dl, val_dl, gen, enc, optimizer, out_dir, writer, device, c
             writer.add_scalar(tag, val, t)
         writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], t)
 
-        torch.save(gen.state_dict(), os.path.join(out_dir, f"gen_weights_{t}.pth"))
+        # torch.save(gen.state_dict(), os.path.join(out_dir, f"gen_weights_{t}.pth"))
 
         # early stopping
         if val_target_metric > best_val_target_metric:

@@ -73,9 +73,10 @@ def get_algn_mask(anns, max_tokens):
 
     return algn_mask
     
-def compute_top_k_prob_mask(gen, ds, algn_mask, rate, args, config):
+def compute_top_k_prob_mask(gen, ds, args, config):
     """ Returns prob mask tensor with only the top r% most confident tokens retained; remaining tokens are zeroed out.
     Size (L, N), where L denotes the longest sequence length and N denotes the training size.  """
+    # TODO: assert shuffle false
     dataloader = DataLoader(ds, batch_size=config["train"]["batch_size"], shuffle=False, collate_fn=pad_collate)  
     gen.eval()
     
@@ -100,7 +101,7 @@ def compute_top_k_prob_mask(gen, ds, algn_mask, rate, args, config):
             running_scalar_metrics += torch.tensor([tok_p, tok_r, tok_f1])
 
         # label top k% of most confident tokens
-        top_k_prob_mask = get_top_k_prob_mask(prob_mask, algn_mask, rate, strategy="token")# (max_tokens, trg_size)
+        top_k_prob_mask = get_top_k_prob_mask(prob_mask, ds.get_algn_mask(), config["cotrain"]["token_pn"], strategy="token")# (max_tokens, trg_size)
 
         # perfect labelling instead
         if config["cotrain"]["perfect"]: 
@@ -124,9 +125,8 @@ def compute_top_k_prob_mask(gen, ds, algn_mask, rate, args, config):
 
     return top_k_prob_mask, scalar_metrics, r_mask, prob_mask
 
-def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, src_algn_mask, tgt_algn_mask, rate, args, config, device, label_fns=[same_label, higher_conf]) -> DataLoader:
+def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, args, config, device, label_fns=[same_label, higher_conf]) -> Dataset:
     """ Augments ds with self-labels. """
-
     src_ds.cotrain_mask = None
     tgt_ds.cotrain_mask = None
 
@@ -142,9 +142,10 @@ def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, src_algn_mask, tgt_algn_mask, rate
     # p.join()
     # exit(1)
 
-    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_ds, src_algn_mask, rate, args, config)
+
+    src_top_k_prob_mask, src_scalar_metrics, src_r_mask, src_prob_mask = compute_top_k_prob_mask(src_gen, src_ds, args, config)
     logger.info(src_scalar_metrics)
-    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_ds, tgt_algn_mask, rate, args, config)
+    tgt_top_k_prob_mask, tgt_scalar_metrics, tgt_r_mask, tgt_prob_mask = compute_top_k_prob_mask(tgt_gen, tgt_ds, args, config)
     logger.info(tgt_scalar_metrics)
 
 
@@ -233,7 +234,8 @@ def main():
     config["generator"]["continuity_lambda"] = 0
     if args.tune_hp:
         config = tune_hp(config)
-    assert 0 <= config["cotrain"]["rate"] <= 1
+    assert 0 <= config["cotrain"]["instance_pn"] <= 1
+    assert 0 <= config["cotrain"]["token_pn"] <= 1
     write_json(config, os.path.join(args.out_dir, "config.json"))
     config["encoder"]["num_classes"] = len(dataset_mapping)
 
@@ -275,9 +277,6 @@ def main():
         torch.save(tgt_l_feats, os.path.join(args.tgt_lab_data_dir, "tgt_l_feats.pkl"))
         torch.save(tgt_ul_feats, os.path.join(args.tgt_unlab_data_dir, "tgt_ul_feats.pkl"))
 
-    src_algn_mask = get_algn_mask(src_ul_feats[0], config["max_tokens"])
-    tgt_algn_mask = get_algn_mask(tgt_ul_feats[0], config["max_tokens"])
-
     # create train dataloader later
     # NOTE: for train, need to indicate which are sup since we'll be labelling other examples too
     src_l_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in src_l_feats]
@@ -285,9 +284,7 @@ def main():
     tgt_l_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in tgt_l_feats]
     tgt_ul_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in tgt_ul_feats]
     src_l_ds[0].is_labelled = True
-    src_ul_ds[0].is_labelled = False
     tgt_l_ds[0].is_labelled = True
-    tgt_ul_ds[0].is_labelled = False
 
     # tgt_ul_train_ds = EraserDataset(tgt_ul_feats[0], tokenizer, embedding_model, is_labelled=False)
     dl_params = {"batch_size": config["train"]["batch_size"], "shuffle": True, "collate_fn": pad_collate}
@@ -296,13 +293,6 @@ def main():
     tgt_val_dl = DataLoader(ConcatDataset([tgt_l_ds[1], tgt_ul_ds[1]]), **dl_params)
     tgt_test_dl = DataLoader(ConcatDataset([tgt_l_ds[2], tgt_ul_ds[2]]), **dl_params)
 
-    # src_l_train_dl = DataLoader(EraserDataset(src_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
-    # src_val_dl = DataLoader(EraserDataset(src_l_feats[1]+src_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
-    # src_test_dl = DataLoader(EraserDataset(src_l_feats[2]+src_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
-
-    # tgt_l_train_dl = DataLoader(EraserDataset(tgt_l_feats[0], tokenizer, embedding_model, is_labelled=True), **dl_params)
-    # tgt_val_dl = DataLoader(EraserDataset(tgt_l_feats[1]+tgt_ul_feats[1], tokenizer, embedding_model, is_labelled=False), **dl_params)
-    # tgt_test_dl = DataLoader(EraserDataset(tgt_l_feats[2]+tgt_ul_feats[2], tokenizer, embedding_model, is_labelled=False), **dl_params)
     logger.info(f"after dataloaders: {time.time() - start_time}")
 
     best_src_gen_fp = os.path.join(args.src_model_dir, "best_gen_weights.pth")  # will be updated
@@ -311,6 +301,8 @@ def main():
     co_best_tgt_val_metrics = get_best_val_metrics(read_json(os.path.join(args.tgt_model_dir, "best_val_results.json")))
     co_es_count = 0
     co_writer = SummaryWriter(args.out_dir)
+    shuffled_ids = torch.randperm(len(src_ul_ds[0]))
+
     for co_t in range(config["cotrain"]["epochs"]):
         logger.info(f"Cotrain Epochs {co_t}\n-------------------------------")
         # updates train datasets with new cotrain masks
@@ -322,12 +314,19 @@ def main():
         tgt_optimizer = get_optimizer([tgt_gen], cur_lr)
 
         # rate = min(2 * config["cotrain"]["rate"] * (1 - 0.5 ** (co_t + 1)), 1)  # sum of GP with a = rate, r = 0.5
-        rate = config["cotrain"]["rate"] * (co_t + 1)
-        logger.info(f"rate: {rate}")
-        src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_ul_ds[0], tgt_ul_ds[0], src_algn_mask, tgt_algn_mask, rate, args, config, device)
+        pn = config["cotrain"]["instance_pn"] * (co_t + 1)
+        size = math.floor(pn * len(src_ul_ds[0]))
+        
+        logger.info(f"pn: {pn}")
+        logger.info(f"size: {size}")
+        src_ul_subfeats = [ann for i, ann in enumerate(src_ul_feats[0]) if i in shuffled_ids[:size]]
+        src_ul_subds = EraserDataset(src_ul_subfeats, tokenizer, embedding_model, is_labelled=False)
+
+        tgt_ul_subfeats = [ann for i, ann in enumerate(tgt_ul_feats[0]) if i in shuffled_ids[:size]]
+        tgt_ul_subds = EraserDataset(tgt_ul_subfeats, tokenizer, embedding_model, is_labelled=False)
+        src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_ul_subds, tgt_ul_subds, args, config, device)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
-        co_writer.add_scalar("rate", rate, co_t)
         co_writer.add_scalar("lr", cur_lr, co_t)
 
         # fine-tuning C_k 
