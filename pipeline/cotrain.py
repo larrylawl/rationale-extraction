@@ -39,6 +39,7 @@ def parse_args():
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--tune_hp", action="store_true")
     parser.add_argument("--overwrite_cache", action="store_true")
+    parser.add_argument("--subset_val", action="store_true")
     parser.add_argument("--seed", required=True, type=int, default=100)
 
     return parser.parse_args()
@@ -285,13 +286,27 @@ def main():
     tgt_ul_ds = [EraserDataset(feat, tokenizer, embedding_model) for feat in tgt_ul_feats]
     src_l_ds[0].is_labelled = True
     tgt_l_ds[0].is_labelled = True
+    
+    src_val_ds = ConcatDataset([src_l_ds[1], src_ul_ds[1]])
+    src_test_ds = ConcatDataset([src_l_ds[2], src_ul_ds[2]])
+    tgt_val_ds = ConcatDataset([tgt_l_ds[1], tgt_ul_ds[1]])
+    tgt_test_ds = ConcatDataset([tgt_l_ds[1], tgt_ul_ds[1]])
+    
+    if args.subset_val:
+        val_shuffled_ids = torch.randperm(len(src_val_ds))
+        val_size = math.floor(config["cotrain"]["instance_pn"] * len(src_val_ds))
+        test_shuffled_ids = torch.randperm(len(src_test_ds))
+        test_size = math.floor(config["cotrain"]["instance_pn"] * len(src_test_ds))
+        src_val_ds = Subset(src_val_ds, val_shuffled_ids[:val_size])
+        src_test_ds = Subset(src_test_ds, test_shuffled_ids[:test_size])
+        tgt_val_ds = Subset(tgt_val_ds, val_shuffled_ids[:val_size])
+        tgt_test_ds = Subset(tgt_test_ds, test_shuffled_ids[:test_size])
 
-    # tgt_ul_train_ds = EraserDataset(tgt_ul_feats[0], tokenizer, embedding_model, is_labelled=False)
     dl_params = {"batch_size": config["train"]["batch_size"], "shuffle": True, "collate_fn": pad_collate}
-    src_val_dl = DataLoader(ConcatDataset([src_l_ds[1], src_ul_ds[1]]), **dl_params)
-    src_test_dl = DataLoader(ConcatDataset([src_l_ds[2], src_ul_ds[2]]), **dl_params)
-    tgt_val_dl = DataLoader(ConcatDataset([tgt_l_ds[1], tgt_ul_ds[1]]), **dl_params)
-    tgt_test_dl = DataLoader(ConcatDataset([tgt_l_ds[2], tgt_ul_ds[2]]), **dl_params)
+    src_val_dl = DataLoader(src_val_ds, **dl_params)
+    src_test_dl = DataLoader(src_test_ds, **dl_params)
+    tgt_val_dl = DataLoader(tgt_val_ds, **dl_params)
+    tgt_test_dl = DataLoader(tgt_test_ds, **dl_params)
 
     logger.info(f"after dataloaders: {time.time() - start_time}")
 

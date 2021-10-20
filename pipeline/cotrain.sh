@@ -3,7 +3,7 @@ set -e
 
 lab_dataset_name=esnli_1000
 unlab_dataset_name=esnli_20000
-exp_name=cotrain/instance
+exp_name=cotrain/subset_instance
 root_data_dir=..
 
 repeat=0
@@ -24,4 +24,5 @@ python cotrain.py --src_lab_data_dir $src_lab_data_dir \
     --tgt_model_dir $tgt_model_dir \
     --config $config \
     --out_dir $out_dir/$repeat \
-    --seed $(( 100 + $repeat ))
+    --seed $(( 100 + $repeat )) \
+    --subset_val
