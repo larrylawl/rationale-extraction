@@ -334,7 +334,8 @@ def main():
         
         logger.info(f"pn: {pn}")
         logger.info(f"size: {size}")
-        src_ul_subfeats = [ann for i, ann in enumerate(src_ul_feats[0]) if i in shuffled_ids[:size]]
+        sub_idxs = set(shuffled_ids[:size].tolist())
+        src_ul_subfeats = [ann for i, ann in enumerate(src_ul_feats[0]) if i in sub_idxs]
         logger.info(f"after iterating")
         src_ul_subds = EraserDataset(src_ul_subfeats, tokenizer, embedding_model, is_labelled=False)
 

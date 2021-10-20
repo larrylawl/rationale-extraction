@@ -3,10 +3,10 @@ set -e
 
 lab_dataset_name=esnli_1000
 unlab_dataset_name=esnli_1000_comp
-exp_name=cotrain/perfect
+exp_name=cotrain/vanilla
 root_data_dir=..
 
-repeat=2
+repeat=0
 src_lab_data_dir=$root_data_dir/data/esnli/$lab_dataset_name
 tgt_lab_data_dir=$root_data_dir/data/esnli/${lab_dataset_name}_fr
 src_unlab_data_dir=$root_data_dir/data/esnli/$unlab_dataset_name
