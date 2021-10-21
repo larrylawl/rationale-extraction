@@ -197,15 +197,17 @@ def cotrain(src_gen, tgt_gen, src_ds, tgt_ds, args, config, device, label_fns=[s
     
     src_eg_idx = torch.unique((src_top_k_prob_mask + 1).nonzero(as_tuple = True)[1])
     src_eg_pn = len(src_eg_idx) / src_top_k_prob_mask.size(1)
+    src_top_k_pos_pn = torch.count_nonzero(src_top_k_pred) / len(src_top_k_pred)
 
     tgt_eg_idx = torch.unique((tgt_top_k_prob_mask + 1).nonzero(as_tuple = True)[1])
     tgt_eg_pn = len(tgt_eg_idx) / tgt_top_k_prob_mask.size(1)
+    tgt_top_k_pos_pn = torch.count_nonzero(tgt_top_k_pred) / len(tgt_top_k_pred)
 
     overall_scalar_metrics = {
         "src_top_k_p": src_p, "src_top_k_r": src_r, "src_top_k_f1": src_f1,
         "tgt_top_k_p": tgt_p, "tgt_top_k_r": tgt_r, "tgt_top_k_f1": tgt_f1,
         "denied_labels": denied_labels / (len(src_idxs) + len(tgt_idxs)), "success_labels_pn": success_labels / (len(src_idxs) + len(tgt_idxs)),
-        "src_eg_pn": src_eg_pn, "tgt_eg_pn": tgt_eg_pn
+        "src_eg_pn": src_eg_pn, "tgt_eg_pn": tgt_eg_pn, "src_top_k_pos_pn": src_top_k_pos_pn, "tgt_top_k_pos_pn": tgt_top_k_pos_pn
     }
     logger.info(overall_scalar_metrics)
 
@@ -342,6 +344,7 @@ def main():
         tgt_ul_subfeats = [ann for i, ann in enumerate(tgt_ul_feats[0]) if i in shuffled_ids[:size]]
         tgt_ul_subds = EraserDataset(tgt_ul_subfeats, tokenizer, embedding_model, is_labelled=False)
         src_ul_train_ds, tgt_ul_train_ds, cotrain_scalar_metrics = cotrain(src_gen, tgt_gen, src_ul_subds, tgt_ul_subds, args, config, device)
+        exit(1)
         for tag, val in cotrain_scalar_metrics.items():
             co_writer.add_scalar(tag, val, co_t)
         co_writer.add_scalar("lr", cur_lr, co_t)
